@@ -9152,6 +9152,25 @@
                 return !free || bytes <= free;
             },
 
+            // Re-fetch the free-space figure for the newly chosen destination
+            // without resetting the open detail panel.
+            async refreshHfDiskFree() {
+                const repoId = this.hfModelDetail?.repo_id;
+                if (!repoId) return;
+                const params = new URLSearchParams({ repo_id: repoId });
+                if (this.hfDestDir) params.set('dest_dir', this.hfDestDir);
+                try {
+                    const response = await fetch(`/admin/api/hf/model-info?${params}`, {
+                        headers: this.hfToken ? { 'X-HF-Token': this.hfToken } : {},
+                    });
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    this.hfModelDetail = { ...this.hfModelDetail, disk_free: data.disk_free };
+                } catch (err) {
+                    console.error('Failed to refresh disk space:', err);
+                }
+            },
+
             formatFileSize(bytes) {
                 if (!bytes) return '';
                 if (bytes < 1024) return bytes + ' B';

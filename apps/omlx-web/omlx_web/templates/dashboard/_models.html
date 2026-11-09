@@ -2311,6 +2311,15 @@
                                         </template>
                                         <template x-if="!hfModelDetail.is_adapter && !hfModelDetail.unsupported_reason && (hfModelDetail.layout === 'gguf' || !isModelDownloaded(hfModelDetail.repo_id))">
                                             <div class="flex items-center gap-2">
+                                                <select x-show="modelDirChoices().length > 1" x-cloak x-model="hfDestDir"
+                                                        @change="refreshHfDiskFree()"
+                                                        class="px-2 py-1.5 text-xs border border-neutral-200 rounded-lg bg-white font-mono max-w-[220px]"
+                                                        :title="window.t('models.downloader.dest_dir')">
+                                                    <option value="">{{ t('models.downloader.dest_primary') }}</option>
+                                                    <template x-for="dir in modelDirChoices().slice(1)" :key="dir">
+                                                        <option :value="dir" x-text="dir"></option>
+                                                    </template>
+                                                </select>
                                                 <button @click="submitHFDownload(null)"
                                                         :disabled="hfDownloading || !hfFitsDisk(hfDownloadAllSize())"
                                                         class="px-4 py-2 text-xs font-medium text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-full transition-all
