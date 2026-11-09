@@ -32,15 +32,34 @@ if [[ -z $PLIST ]]; then
   exit 1
 fi
 
-PY=$(plutil -convert json -o - "$PLIST" | python3 -c \
+ARG=$(plutil -convert json -o - "$PLIST" | python3 -c \
   'import json,sys; print(json.load(sys.stdin)["ProgramArguments"][0])')
-if [[ ! -x $PY ]]; then
-  echo "error: oMLX interpreter not executable: $PY" >&2
+if [[ ! -e $ARG ]]; then
+  echo "error: oMLX launcher not found: $ARG" >&2
   exit 1
 fi
 
-ROOT=$("$PY" -c 'import omlx, os; print(os.path.dirname(omlx.__file__))')
-WEB=$("$PY" -c 'import omlx_web, os; print(os.path.dirname(omlx_web.__file__))')
+# The DMG build runs a shim (often a symlink into oMLX.app) whose Resources
+# directory holds the vendored omlx and omlx_web packages.
+REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ARG")
+RES=$(dirname "$(dirname "$REAL")")/Resources
+if [[ -f $RES/omlx/__init__.py ]]; then
+  ROOT=$RES/omlx
+  WEB=$RES/omlx_web
+else
+  # pip installs: the launcher is a console script or the interpreter itself.
+  PY=$ARG
+  if [[ $(head -c 2 "$PY" 2>/dev/null) == '#!' ]]; then
+    PY=$(head -1 "$PY" | sed 's/^#!//; s/^[[:space:]]*//')
+    PY=${PY#/usr/bin/env }
+  fi
+  if [[ ! -x $PY ]]; then
+    echo "error: oMLX interpreter not executable: $PY" >&2
+    exit 1
+  fi
+  ROOT=$("$PY" -c 'import omlx, os; print(os.path.dirname(omlx.__file__))')
+  WEB=$("$PY" -c 'import omlx_web, os; print(os.path.dirname(omlx_web.__file__))')
+fi
 echo "installed at: $ROOT"
 echo "web package:  $WEB"
 
