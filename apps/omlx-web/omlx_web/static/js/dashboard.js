@@ -511,6 +511,15 @@
             hfTokenInvalid: false,
             _hfRefreshTimer: null,
             hfDeleteConfirm: null,
+            // Root chosen for the next download; "" keeps the primary dir.
+            hfDestDir: '',
+            msDestDir: '',
+            // Row state for moving models between model directories.
+            hfMoveConfirm: null,
+            hfMoveDest: '',
+            // move name -> latest status row from /api/hf/models/move.
+            hfMoves: {},
+            _moveRefreshTimer: null,
             // Lowercased repo ID -> {files, size} from the last update check.
             hfUpdates: {},
             hfUpdatesChecking: false,
@@ -7721,6 +7730,7 @@
                             repo_id: repoId,
                             hf_token: this.hfToken,
                             files,
+                            dest_dir: this.hfDestDir || '',
                         }),
                         signal: controller.signal,
                     });
@@ -7922,6 +7932,114 @@
                 this._hfRefreshTimer = setInterval(() => {
                     this.loadHFTasks();
                 }, 500);
+            },
+
+            // Configured model directories for the download-destination and
+            // move-destination pickers; first entry is the primary.
+            modelDirChoices() {
+                return (this.globalSettings.model.model_dirs || [])
+                    .map(d => (d || '').trim())
+                    .filter(Boolean);
+            },
+
+            startMoveRefresh() {
+                this.stopMoveRefresh();
+                this._moveRefreshTimer = setInterval(() => {
+                    this.refreshMoves();
+                }, 1000);
+            },
+
+            stopMoveRefresh() {
+                if (this._moveRefreshTimer) {
+                    clearInterval(this._moveRefreshTimer);
+                    this._moveRefreshTimer = null;
+                }
+            },
+
+            // Poll in-flight moves; refresh listings once they all settle.
+            async refreshMoves() {
+                const ids = Object.entries(this.hfMoves)
+                    .filter(([, m]) => m.status !== 'done' && m.status !== 'error')
+                    .map(([id]) => id);
+                if (!ids.length) {
+                    this.stopMoveRefresh();
+                    return;
+                }
+                let settled = false;
+                for (const id of ids) {
+                    try {
+                        const response = await fetch(`/admin/api/hf/models/move/${id}`);
+                        if (!response.ok) continue;
+                        const data = await response.json();
+                        this.hfMoves = { ...this.hfMoves, [id]: data.move };
+                        if (data.move.status === 'done') settled = true;
+                    } catch (err) {
+                        console.error('Failed to poll model move:', err);
+                    }
+                }
+                if (settled) {
+                    await this.loadHFModels();
+                    await this.loadModels();
+                }
+            },
+
+            hfMoveRow(modelName) {
+                for (const m of Object.values(this.hfMoves)) {
+                    // Done rows drop out once the listings have refreshed.
+                    if (m.name === modelName && m.status !== 'done') return m;
+                }
+                return null;
+            },
+
+            moveLabel(m) {
+                if (m.status === 'starting') return window.t('models.manager.move_starting');
+                if (m.status === 'finalizing') return window.t('models.manager.move_finalizing');
+                if (m.status === 'done') return window.t('models.manager.move_done');
+                if (m.status === 'error') return m.error || window.t('models.manager.move_error');
+                const total = m.total_bytes || 0;
+                const done = m.moved_bytes || 0;
+                if (total > 0) {
+                    const pct = Math.min(99, Math.round((done / total) * 100));
+                    const fmt = (n) => this.formatFileSize(n);
+                    return `${window.t('models.manager.move_copying')} ${pct}% · ${fmt(done)} / ${fmt(total)}`;
+                }
+                return window.t('models.manager.move_copying');
+            },
+
+            openMoveConfirm(modelName) {
+                const choices = this.modelDirChoices();
+                if (choices.length < 2) return;
+                this.hfMoveConfirm = modelName;
+                // Default to the first directory that is not the source dir.
+                const info = (this.hfModels || []).find(m => m.name === modelName);
+                const srcDir = info && info.path ? info.path : '';
+                this.hfMoveDest = choices.find(d => !srcDir.startsWith(d + '/')) || choices[0];
+            },
+
+            async moveHFModel(modelName) {
+                const dest = this.hfMoveDest;
+                this.hfMoveConfirm = null;
+                if (!dest) return;
+                try {
+                    const response = await fetch('/admin/api/hf/models/move', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: modelName, dest_dir: dest }),
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.hfMoves = { ...this.hfMoves, [data.move.move_id]: data.move };
+                        this.startMoveRefresh();
+                    } else {
+                        const data = await response.json().catch(() => ({}));
+                        this.hfError = data.detail || window.t('js.error.move_model_failed');
+                        setTimeout(() => { this.hfError = ''; }, 5000);
+                    }
+                } catch (err) {
+                    console.error('Failed to start model move:', err);
+                    this.hfError = window.t('js.error.move_model_failed');
+                    setTimeout(() => { this.hfError = ''; }, 5000);
+                }
             },
 
             stopHFRefresh() {
@@ -9087,6 +9205,7 @@
                         body: JSON.stringify({
                             model_id: repoId,
                             ms_token: this.msToken || '',
+                            dest_dir: this.msDestDir || '',
                         }),
                         signal: controller.signal,
                     });

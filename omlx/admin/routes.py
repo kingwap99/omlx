@@ -10,6 +10,7 @@ This module provides HTTP routes for the admin panel including:
 
 import asyncio
 import copy
+import contextlib
 import inspect
 import json
 import logging
@@ -22,6 +23,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from collections import deque
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
@@ -862,6 +864,9 @@ class HFDownloadRequest(BaseModel):
     repo_id: str
     hf_token: str = ""
     files: list[str] | None = None
+    # Root directory for the download; empty uses the primary model dir.
+    # Must be one of the configured model directories.
+    dest_dir: str = ""
 
 
 class HFUpdateCheckRequest(BaseModel):
@@ -882,6 +887,14 @@ class MSDownloadRequest(BaseModel):
 
     model_id: str
     ms_token: str = ""
+    dest_dir: str = ""
+
+
+class ModelMoveRequest(BaseModel):
+    """Request model for moving a downloaded model between model directories."""
+
+    name: str
+    dest_dir: str
 
 
 class MSRetryRequest(BaseModel):
@@ -7927,6 +7940,31 @@ async def probe_cache(
 # =============================================================================
 
 
+def _resolve_download_dest(dest_dir: str) -> str:
+    """Validate a requested download root against configured model dirs.
+
+    Returns the resolved path, or "" for the primary directory default.
+    A destination outside the discovery directories would hide downloaded
+    models from listing, so it is rejected.
+    """
+    if not dest_dir or not dest_dir.strip():
+        return ""
+    global_settings = _get_global_settings()
+    if global_settings is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    requested = Path(dest_dir.strip()).expanduser().resolve()
+    allowed = global_settings.model.get_model_dirs(global_settings.base_path)
+    if requested not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Download destination must be one of the configured model "
+                f"directories: {[str(p) for p in allowed]}"
+            ),
+        )
+    return str(requested)
+
+
 @router.post("/api/hf/download")
 async def start_hf_download(
     request: HFDownloadRequest,
@@ -7938,7 +7976,10 @@ async def start_hf_download(
 
     try:
         task = await _hf_downloader.start_download(
-            request.repo_id, request.hf_token, files=request.files
+            request.repo_id,
+            request.hf_token,
+            files=request.files,
+            dest_dir=_resolve_download_dest(request.dest_dir),
         )
         return {"success": True, "task": task.to_dict()}
     except ValueError as e:
@@ -8348,6 +8389,46 @@ def _is_listed_model_folder(path: Path) -> bool:
     return (path / "config.json").exists() or gguf.is_gguf_folder(path)
 
 
+def _find_model_folder(
+    model_name: str, model_dirs: list[Path]
+) -> tuple[Path | None, Path | None, str]:
+    """Locate a listed model folder across the discovery directories.
+
+    Checks flat, HF cache and org-folder layouts in directory order.
+
+    Returns:
+        (model_path, parent_model_dir, kind) where kind is "hf_cache" for a
+        Hugging Face cache repo entry, else "dir"; (None, None, "") when the
+        model is not listed anywhere.
+    """
+    for model_dir in model_dirs:
+        if not model_dir.exists():
+            continue
+        candidate = model_dir / model_name
+        if candidate.is_dir() and _is_listed_model_folder(candidate):
+            return candidate, model_dir, "dir"
+        for subdir in model_dir.iterdir():
+            if not subdir.is_dir() or subdir.name.startswith("."):
+                continue
+            hf_resolved = _resolve_hf_cache_entry(subdir)
+            if hf_resolved is not None:
+                # The repo dir owns the snapshot symlinks and their blobs, so
+                # it is removed as one unit.
+                if hf_resolved.model_id == model_name and (
+                    _is_hf_cache_mlx_compatible(
+                        hf_resolved.snapshot_path, hf_resolved.source_repo_id
+                    )
+                    or gguf.is_gguf_folder(hf_resolved.snapshot_path)
+                ):
+                    return subdir, model_dir, "hf_cache"
+                continue
+            candidate = subdir / model_name
+            if candidate.is_dir() and _is_listed_model_folder(candidate):
+                return candidate, model_dir, "dir"
+
+    return None, None, ""
+
+
 @router.delete("/api/hf/models/{model_name}")
 async def delete_hf_model(
     model_name: str,
@@ -8369,40 +8450,7 @@ async def delete_hf_model(
         return {"success": True, "message": f"Model '{model_name}' deleted"}
 
     # Search the discovery directories in flat, HF cache and org-folder layouts
-    model_path = None
-    parent_model_dir = None
-    for model_dir in model_dirs:
-        if not model_dir.exists():
-            continue
-        candidate = model_dir / model_name
-        if candidate.is_dir() and _is_listed_model_folder(candidate):
-            model_path = candidate
-            parent_model_dir = model_dir
-            break
-        for subdir in model_dir.iterdir():
-            if not subdir.is_dir() or subdir.name.startswith("."):
-                continue
-            hf_resolved = _resolve_hf_cache_entry(subdir)
-            if hf_resolved is not None:
-                # The repo dir owns the snapshot symlinks and their blobs, so
-                # it is removed as one unit.
-                if hf_resolved.model_id == model_name and (
-                    _is_hf_cache_mlx_compatible(
-                        hf_resolved.snapshot_path, hf_resolved.source_repo_id
-                    )
-                    or gguf.is_gguf_folder(hf_resolved.snapshot_path)
-                ):
-                    model_path = subdir
-                    parent_model_dir = model_dir
-                    break
-                continue
-            candidate = subdir / model_name
-            if candidate.is_dir() and _is_listed_model_folder(candidate):
-                model_path = candidate
-                parent_model_dir = model_dir
-                break
-        if model_path is not None:
-            break
+    model_path, parent_model_dir, _kind = _find_model_folder(model_name, model_dirs)
 
     if model_path is None:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -8470,6 +8518,265 @@ async def delete_hf_model(
 
     _refresh_pool_after_delete(model_name, engine_pool, global_settings)
     return {"success": True, "message": f"Model '{model_name}' deleted"}
+
+
+def _refresh_pool_after_move(
+    model_name: str, engine_pool, global_settings
+) -> None:
+    """Re-discover a moved model without dropping its persisted settings."""
+    if engine_pool is None:
+        return
+    settings_manager = _get_settings_manager()
+    pinned_models = (
+        settings_manager.get_pinned_model_ids() if settings_manager else []
+    )
+    # Drop the stale entry so discovery picks up the new path; unlike a
+    # delete, the model's settings (alias included) stay keyed by name.
+    engine_pool._entries.pop(model_name, None)
+    engine_pool.discover_models(
+        [str(d) for d in global_settings.get_effective_model_dirs()],
+        pinned_models,
+    )
+    if settings_manager:
+        engine_pool.apply_settings_overrides(settings_manager)
+    logger.info("Model pool refreshed after move")
+
+
+# In-flight and recently finished model moves, keyed by move_id.
+_model_move_tasks: dict[str, dict] = {}
+
+_MOVE_TMP_PREFIX = ".omlx-move-"
+
+
+def _drop_rmtree_errors(func, path, exc) -> None:  # pragma: no cover - callback
+    """Skip macOS resource forks that vanish mid-delete (e.g. on exFAT)."""
+    if isinstance(exc, FileNotFoundError) and Path(path).name.startswith("._"):
+        logger.debug(f"Ignoring missing resource fork file: {path}")
+        return
+    raise exc
+
+
+def _move_tree_with_progress(src: Path, tmp: Path, state: dict) -> None:
+    """Copy a model tree into ``tmp``, recording byte progress in ``state``."""
+    files: list[Path] = []
+    total = 0
+    for path in sorted(src.rglob("*")):
+        if path.is_symlink():
+            files.append(path)  # Recreated as a link; costs nothing to copy.
+            continue
+        if path.is_file():
+            size = path.stat().st_size
+            total += size
+            files.append(path)
+    state["total_bytes"] = total
+
+    moved = 0
+    for path in files:
+        rel = path.relative_to(src)
+        target = tmp / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink():
+            os.symlink(os.readlink(path), target)
+            continue
+        shutil.copy2(path, target)
+        moved += path.stat().st_size
+        state["moved_bytes"] = moved
+
+    if moved != total:
+        raise RuntimeError(
+            f"Copy finished with {moved} of {total} bytes; source left intact"
+        )
+
+
+async def _run_model_move(move_id: str) -> None:
+    """Perform a queued move in the background, updating its status row."""
+    state = _model_move_tasks[move_id]
+    src = Path(state["src"])
+    dest = Path(state["dest"])
+    tmp = Path(state["tmp"])
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Same-volume move: one rename, done.
+        try:
+            await asyncio.to_thread(os.replace, src, dest)
+            state["status"] = "done"
+        except OSError:
+            # EXDEV (cross-device) and anything rename cannot do: copy,
+            # verify, then delete the source.
+            free = shutil.disk_usage(dest.parent).free
+            required = sum(
+                f.stat().st_size for f in src.rglob("*") if f.is_file()
+            )
+            if required > free:
+                raise RuntimeError(
+                    f"Not enough free space at destination: need "
+                    f"{required} bytes, have {free}"
+                ) from None
+            state["status"] = "copying"
+            tmp.mkdir(parents=True, exist_ok=False)
+            await asyncio.to_thread(_move_tree_with_progress, src, tmp, state)
+            state["status"] = "finalizing"
+            await asyncio.to_thread(os.replace, tmp, dest)
+            # The tree is safe at the destination; a failed source cleanup
+            # must not undo that, so surface it in the status only.
+            try:
+                shutil.rmtree(src, onexc=_drop_rmtree_errors)
+            except Exception as cleanup_exc:  # noqa: BLE001 - dest already good
+                state["cleanup_error"] = str(cleanup_exc)
+                logger.warning(
+                    "Moved model but could not delete %s: %s", src, cleanup_exc
+                )
+            state["status"] = "done"
+        # Tidy an emptied org folder the moved model lived under.
+        parent = src.parent
+        base = Path(state["src_root"])
+        if parent != base and parent.exists() and not any(parent.iterdir()):
+            with contextlib.suppress(OSError):
+                parent.rmdir()
+        _refresh_pool_after_move(state["name"], _get_engine_pool(), _get_global_settings())
+        logger.info("Moved model %s: %s -> %s", state["name"], src, dest)
+    except Exception as exc:  # noqa: BLE001 - report through task status
+        state["status"] = "error"
+        state["error"] = str(exc)
+        logger.error("Model move failed for %s: %s", state["name"], exc)
+        try:
+            if tmp.exists():
+                shutil.rmtree(tmp, ignore_errors=True)
+        except OSError:
+            pass
+    finally:
+        state["finished_at"] = time.time()
+
+
+@router.post("/api/hf/models/move")
+async def move_hf_model(
+    request: ModelMoveRequest,
+    is_admin: bool = Depends(require_admin),
+):
+    """Move a downloaded model folder into another configured model dir."""
+    global_settings = _get_global_settings()
+    engine_pool = _get_engine_pool()
+    if global_settings is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+
+    model_name = request.name.strip()
+    if not model_name:
+        raise HTTPException(status_code=400, detail="Model name is required")
+
+    model_dirs = global_settings.get_effective_model_dirs()
+
+    entry = engine_pool.get_entry(model_name) if engine_pool is not None else None
+    if entry is not None and entry.model_format == "gguf":
+        raise HTTPException(
+            status_code=400, detail="Moving GGUF models is not supported"
+        )
+
+    model_path, parent_model_dir, kind = _find_model_folder(model_name, model_dirs)
+    if model_path is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if kind == "hf_cache":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot move a Hugging Face cache entry; set the HF cache "
+                "path in settings instead"
+            ),
+        )
+    if model_path.is_symlink() or not model_path.is_dir():
+        raise HTTPException(status_code=400, detail="Not a model directory")
+
+    dest_root = Path(request.dest_dir).expanduser().resolve()
+    allowed = global_settings.model.get_model_dirs(global_settings.base_path)
+    if dest_root not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Move destination must be one of the configured model "
+                f"directories: {[str(p) for p in allowed]}"
+            ),
+        )
+    if dest_root == parent_model_dir:
+        raise HTTPException(
+            status_code=400, detail="Model is already in that directory"
+        )
+
+    # Keep the org-folder layout (owner/model) at the destination.
+    rel = model_path.relative_to(parent_model_dir)
+    dest = dest_root / rel
+    try:
+        if model_path.resolve() == dest.resolve():
+            raise HTTPException(
+                status_code=400, detail="Model is already in that directory"
+            )
+    except OSError:
+        pass
+    if dest.exists():
+        raise HTTPException(
+            status_code=409, detail=f"Destination already exists: {dest}"
+        )
+
+    for task in _model_move_tasks.values():
+        if task["name"] == model_name and task["status"] not in (
+            "done",
+            "error",
+        ):
+            raise HTTPException(
+                status_code=409, detail=f"Move already in progress for '{model_name}'"
+            )
+
+    # A download still writing here would recreate the tree mid-move.
+    if _hf_downloader is not None:
+        await _hf_downloader.cancel_download_for_dir(model_path)
+
+    # Unload before touching files on disk.
+    if engine_pool is not None and model_name in engine_pool.get_loaded_model_ids():
+        try:
+            await engine_pool._unload_engine(model_name)
+            logger.info(f"Unloaded model '{model_name}' before move")
+        except Exception as e:  # noqa: BLE001 - the move may still proceed
+            raise HTTPException(
+                status_code=500, detail=f"Failed to unload model before move: {e}"
+            ) from e
+
+    # Clear unfinished moves and stale temp dirs from an earlier crash.
+    for finished in [
+        key for key, task in _model_move_tasks.items() if task["status"] == "done"
+    ][-20:]:
+        _model_move_tasks.pop(finished, None)
+    for stale in dest.parent.glob(f".{rel.name}-{_MOVE_TMP_PREFIX}*"):
+        shutil.rmtree(stale, ignore_errors=True)
+
+    move_id = str(uuid.uuid4())
+    tmp = dest.parent / f".{rel.name}-{_MOVE_TMP_PREFIX}{move_id[:8]}"
+    state = {
+        "move_id": move_id,
+        "name": model_name,
+        "src": str(model_path),
+        "src_root": str(parent_model_dir),
+        "dest": str(dest),
+        "tmp": str(tmp),
+        "status": "starting",
+        "moved_bytes": 0,
+        "total_bytes": 0,
+        "error": "",
+        "started_at": time.time(),
+        "finished_at": 0.0,
+    }
+    _model_move_tasks[move_id] = state
+    asyncio.create_task(_run_model_move(move_id))
+    return {"success": True, "move": {k: v for k, v in state.items() if k != "tmp"}}
+
+
+@router.get("/api/hf/models/move/{move_id}")
+async def get_model_move_status(
+    move_id: str,
+    is_admin: bool = Depends(require_admin),
+):
+    """Report progress of a model move task."""
+    state = _model_move_tasks.get(move_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Move task not found")
+    return {"move": {k: v for k, v in state.items() if k != "tmp"}}
 
 
 def _refresh_pool_after_delete(model_name: str, engine_pool, global_settings) -> None:
@@ -8608,7 +8915,11 @@ async def start_ms_download(
         )
 
     try:
-        task = await _ms_downloader.start_download(request.model_id, request.ms_token)
+        task = await _ms_downloader.start_download(
+            request.model_id,
+            request.ms_token,
+            dest_dir=_resolve_download_dest(request.dest_dir),
+        )
         return {"success": True, "task": task.to_dict()}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

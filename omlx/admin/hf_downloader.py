@@ -459,6 +459,11 @@ class DownloadTask:
     retry_count: int = 0
     # Repo paths to fetch; None fetches the whole repo.
     files: list[str] | None = None
+    # Snapshot of the download destination root chosen at start time.
+    # Empty means the downloader's current primary directory. Storing it
+    # keeps retries and restart resumes landing next to their partial files
+    # even after the primary directory changes.
+    dest_dir: str = ""
 
     def eta_seconds(self) -> int | None:
         """Seconds left at the _ETA_WINDOW rate, or None when unknown."""
@@ -485,6 +490,7 @@ class DownloadTask:
             "completed_at": self.completed_at,
             "retry_count": self.retry_count,
             "files": self.files,
+            "dest_dir": self.dest_dir,
             "gguf_files": list(models),
             "gguf_model_id": next(iter(models.values()), None),
         }
@@ -506,6 +512,7 @@ class DownloadTask:
             completed_at=float(data.get("completed_at", 0.0)),
             retry_count=int(data.get("retry_count", 0)),
             files=data.get("files") or None,
+            dest_dir=data.get("dest_dir", "") or "",
         )
 
 
@@ -1308,6 +1315,9 @@ class _QueuePersistenceMixin:
                         selection = (
                             {"files": entry["files"]} if entry.get("files") else {}
                         )
+                        dest = entry.get("dest_dir", "")
+                        if dest:
+                            selection["dest_dir"] = dest
                         task = await self.start_download(
                             entry["repo_id"], entry.get("token", ""), **selection
                         )
@@ -1718,6 +1728,22 @@ class HFDownloader(_QueuePersistenceMixin):
         """Update the model directory path."""
         self._model_dir = Path(new_dir)
 
+    def destination_dirs(self) -> list[Path]:
+        """Roots downloads have used: the primary dir plus task snapshots."""
+        roots = [self._model_dir]
+        for task in self._tasks.values():
+            if not task.dest_dir:
+                continue
+            path = Path(task.dest_dir)
+            if not any(path == root or path.is_relative_to(root) for root in roots):
+                roots.append(path)
+        return roots
+
+    def repo_dir(self, repo_id: str, dest_dir: str = "") -> Path:
+        """Where a repo lives under a download destination root."""
+        root = Path(dest_dir) if dest_dir else self._model_dir
+        return root / repo_id
+
     def has_unfinished_download(self, repo_id: str) -> bool:
         """True when the latest download of ``repo_id`` has not completed."""
         wanted = repo_id.lower()
@@ -1740,13 +1766,23 @@ class HFDownloader(_QueuePersistenceMixin):
         """
         api, _endpoint = _get_hf_api()
         semaphore = asyncio.Semaphore(_BLOB_FETCH_CONCURRENCY)
-        local_repos = [
-            repo_id
+        roots = self.destination_dirs()
+
+        def _local_repo_dir(repo_id: str) -> Path | None:
+            for root in roots:
+                candidate = root / repo_id
+                if _has_download_records(candidate):
+                    return candidate
+            return None
+
+        local_dir_by_repo = {
+            repo_id: found
             for repo_id in dict.fromkeys(repo_ids)
             if _is_repo_id(repo_id)
             and not self.has_unfinished_download(repo_id)
-            and _has_download_records(self._model_dir / repo_id)
-        ]
+            and (found := _local_repo_dir(repo_id)) is not None
+        }
+        local_repos = list(local_dir_by_repo)
 
         def _check(repo_id: str) -> dict | None:
             info = api.model_info(
@@ -1755,7 +1791,7 @@ class HFDownloader(_QueuePersistenceMixin):
                 token=token or None,
                 timeout=_HF_API_TIMEOUT,
             )
-            local_dir = self._model_dir / repo_id
+            local_dir = local_dir_by_repo[repo_id]
             files = _file_rows(info.siblings)
             _describe_repo_files(files, local_dir, _remote_etags(info.siblings))
             names = set(_update_files(files, local_dir))
@@ -1786,6 +1822,7 @@ class HFDownloader(_QueuePersistenceMixin):
         repo_id: str,
         hf_token: str = "",
         files: list[str] | None = None,
+        dest_dir: str = "",
     ) -> DownloadTask:
         """Start downloading a model from HuggingFace.
 
@@ -1793,6 +1830,8 @@ class HFDownloader(_QueuePersistenceMixin):
             repo_id: HuggingFace repository ID (e.g., "mlx-community/Llama-3-8B-4bit").
             hf_token: Optional HuggingFace token for gated models.
             files: Repo paths to fetch; None fetches the whole repo.
+            dest_dir: Root directory for the download; empty uses the primary
+                model directory. Callers validate it against configured dirs.
 
         Returns:
             The created DownloadTask.
@@ -1808,6 +1847,11 @@ class HFDownloader(_QueuePersistenceMixin):
                 "Expected format: 'owner/model' (e.g., 'mlx-community/Llama-3-8B-4bit')"
             )
         files = _normalize_files(files)
+        if dest_dir:
+            dest_path = Path(dest_dir).expanduser()
+            if not dest_path.is_absolute():
+                raise ValueError(f"Destination directory must be absolute: {dest_dir}")
+            dest_dir = str(dest_path.resolve())
 
         # One download per repo folder; Hub resolves repo IDs case-insensitively.
         for task in self._tasks.values():
@@ -1820,7 +1864,9 @@ class HFDownloader(_QueuePersistenceMixin):
                 )
 
         task_id = str(uuid.uuid4())
-        task = DownloadTask(task_id=task_id, repo_id=repo_id, files=files)
+        task = DownloadTask(
+            task_id=task_id, repo_id=repo_id, files=files, dest_dir=dest_dir
+        )
         task.token = hf_token or ""
         self._tasks[task_id] = task
 
@@ -1884,7 +1930,9 @@ class HFDownloader(_QueuePersistenceMixin):
         resolved = Path(target_dir).resolve()
         for task_id, active in list(self._active_tasks.items()):
             task = self._tasks.get(task_id)
-            if task is None or (self._model_dir / task.repo_id).resolve() != resolved:
+            if task is None or (
+                self.repo_dir(task.repo_id, task.dest_dir).resolve() != resolved
+            ):
                 continue
             if files is not None and task.files is not None:
                 if not set(task.files) & set(files):
@@ -1947,7 +1995,10 @@ class HFDownloader(_QueuePersistenceMixin):
         # An empty retry token keeps the stored one. If it raises, the old
         # row stays so the user can retry later.
         new_task = await self.start_download(
-            repo_id, hf_token or old_task.token, files=old_task.files
+            repo_id,
+            hf_token or old_task.token,
+            files=old_task.files,
+            dest_dir=old_task.dest_dir,
         )
         del self._tasks[task_id]
         self._cancelled.discard(task_id)
@@ -2021,7 +2072,7 @@ class HFDownloader(_QueuePersistenceMixin):
                 # Preserve {owner}/{model} layout to match other tools
                 # (LMStudio, huggingface-cli) and avoid duplicate downloads
                 # when sharing a model directory.
-                target_dir = self._model_dir / task.repo_id
+                target_dir = self.repo_dir(task.repo_id, task.dest_dir)
 
                 # Hub never resumes leftover temp files; they only inflate progress.
                 try:
@@ -2538,7 +2589,10 @@ class HFDownloader(_QueuePersistenceMixin):
         With ``orphans_only``, files stay while any hub lock here is held.
         """
         staging_dir = (
-            self._model_dir / task.repo_id / ".cache" / "huggingface" / "download"
+            self.repo_dir(task.repo_id, task.dest_dir)
+            / ".cache"
+            / "huggingface"
+            / "download"
         )
         if not staging_dir.is_dir():
             return
