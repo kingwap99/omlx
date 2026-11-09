@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "この Mac 上で古いクリーンアップを忘れました。リモートのクリーンアップは確認されていません。",
   "cluster.v2.join.forget_cleanup_error": "このクリーンアップを忘れてできませんでした。",
   "cluster.v2.membership.waiting_request": "この Mac がコードを表示しペアリング要求を送るのを待っています。",
-  "cluster.v2.membership.add_device": "この Mac を追加"
+  "cluster.v2.membership.add_device": "この Mac を追加",
+  "models.manager.move_title": "モデルを移動",
+  "models.manager.move_in_progress": "モデルを移動中",
+  "models.manager.move_dir_hint": "移動先のディレクトリ",
+  "models.manager.move_free": "空き {size}",
+  "models.manager.move_not_mounted": "未マウント",
+  "models.manager.move_current_tag": "現在の場所",
+  "models.manager.move_space_warn": "収まらない可能性",
+  "models.manager.move_done_note": "モデルを移動しました。一覧を更新しました。",
+  "models.manager.move_close": "閉じる",
+  "js.error.move_model_failed": "モデルの移動を開始できません"
 }

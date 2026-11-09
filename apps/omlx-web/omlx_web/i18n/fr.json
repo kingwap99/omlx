@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "Ancien nettoyage oublié sur ce Mac. Le nettoyage distant n’a pas été confirmé.",
   "cluster.v2.join.forget_cleanup_error": "Impossible d’oublier ce nettoyage.",
   "cluster.v2.membership.waiting_request": "En attente du code et de la demande de couplage de ce Mac.",
-  "cluster.v2.membership.add_device": "Ajouter ce Mac"
+  "cluster.v2.membership.add_device": "Ajouter ce Mac",
+  "models.manager.move_title": "Déplacer le modèle",
+  "models.manager.move_in_progress": "Déplacement du modèle",
+  "models.manager.move_dir_hint": "Répertoire de destination",
+  "models.manager.move_free": "{size} libres",
+  "models.manager.move_not_mounted": "Non monté",
+  "models.manager.move_current_tag": "Emplacement actuel",
+  "models.manager.move_space_warn": "Peut ne pas tenir",
+  "models.manager.move_done_note": "Modèle déplacé. La liste a été actualisée.",
+  "models.manager.move_close": "Fermer",
+  "js.error.move_model_failed": "Échec du lancement du déplacement du modèle"
 }

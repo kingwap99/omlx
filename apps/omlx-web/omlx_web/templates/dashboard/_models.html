@@ -135,12 +135,17 @@
                                                           :title="window.t('settings.models.table.gguf_tooltip')">GGUF</span>
                                                 </template>
                                                 <template x-if="model.model_dir && modelDirChoices().length > 1">
-                                                    <span class="badge flex-shrink-0 max-w-[130px] truncate"
-                                                          :class="isPrimaryModelDir(model.model_dir, model.model_dir_index)
-                                                              ? 'bg-neutral-100 text-neutral-500 border-neutral-200'
-                                                              : 'bg-sky-50 text-sky-700 border-sky-200'"
-                                                          :title="model.model_dir"
-                                                          x-text="modelDirLabel(model.model_dir, model.model_dir_index)"></span>
+                                                    <button :disabled="modelMoveDisabled(model)"
+                                                            @click="openMoveDialog(model)"
+                                                            class="badge flex-shrink-0 max-w-[130px] truncate"
+                                                            :class="[
+                                                                isPrimaryModelDir(model.model_dir, model.model_dir_index)
+                                                                    ? 'bg-neutral-100 text-neutral-500 border-neutral-200'
+                                                                    : 'bg-sky-50 text-sky-700 border-sky-200',
+                                                                modelMoveDisabled(model) ? '' : 'hover:brightness-95 cursor-pointer'
+                                                            ]"
+                                                            :title="model.model_dir"
+                                                            x-text="modelDirLabel(model.model_dir, model.model_dir_index)"></button>
                                                 </template>
                                                 <button x-data="{ copied: false }"
                                                         @click.stop="copyToClipboard(apiModelName(model.name)); copied = true; setTimeout(() => copied = false, 2000)"
@@ -185,35 +190,19 @@
                                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                     </button>
                                                 </template>
-                                                <template x-if="!hfMoveRow(model.name) && hfMoveConfirm !== model.name && model.source_type !== 'hf_cache' && model.model_format !== 'gguf' && modelDirChoices().length > 1">
-                                                    <button @click="openMoveConfirm(model.name)"
+                                                <template x-if="!hfMoveRow(model.name) && model.source_type !== 'hf_cache' && model.model_format !== 'gguf' && modelDirChoices().length > 1">
+                                                    <button @click="openMoveDialog(model)"
                                                             class="p-1.5 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 rounded-lg transition-all"
                                                             :title="window.t('models.manager.move_tooltip')">
                                                         <i data-lucide="folder-input" class="w-4 h-4"></i>
                                                     </button>
                                                 </template>
-                                                <template x-if="hfMoveConfirm === model.name">
-                                                    <div class="flex items-center gap-1.5 flex-wrap justify-end">
-                                                        <select x-model="hfMoveDest"
-                                                                class="px-2 py-1 text-xs border border-neutral-300 rounded-lg bg-white font-mono max-w-[180px]">
-                                                            <template x-for="dir in modelDirChoices()" :key="dir">
-                                                                <option :value="dir" x-text="dir"></option>
-                                                            </template>
-                                                        </select>
-                                                        <button @click="moveHFModel(model.name)"
-                                                                class="px-2 py-1 text-xs font-medium text-white bg-neutral-900 hover:bg-neutral-800 rounded-lg transition-all">
-                                                            {{ t('models.manager.move_yes') }}
-                                                        </button>
-                                                        <button @click="hfMoveConfirm = null"
-                                                                class="px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition-all">
-                                                            {{ t('models.manager.delete_no') }}
-                                                        </button>
-                                                    </div>
-                                                </template>
                                                 <template x-if="hfMoveRow(model.name) && hfMoveRow(model.name).status !== 'done'">
-                                                    <span class="badge whitespace-nowrap"
-                                                          :class="hfMoveRow(model.name).status === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-700 border-amber-200'"
-                                                          x-text="moveLabel(hfMoveRow(model.name))"></span>
+                                                    <button @click="openMoveDialog(model)"
+                                                            class="badge whitespace-nowrap cursor-pointer"
+                                                            :class="hfMoveRow(model.name).status === 'error' ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'"
+                                                            :title="window.t('models.manager.move_tooltip')"
+                                                            x-text="moveLabel(hfMoveRow(model.name))"></button>
                                                 </template>
                                                 <template x-if="hfDeleteConfirm === model.name">
                                                     <div class="flex items-center gap-1.5">

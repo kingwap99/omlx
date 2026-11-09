@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "Old cleanup forgotten on this Mac. Remote cleanup was not confirmed.",
   "cluster.v2.join.forget_cleanup_error": "Could not forget this cleanup.",
   "cluster.v2.membership.waiting_request": "Waiting for this Mac to show its code and send a pairing request.",
-  "cluster.v2.membership.add_device": "Add this Mac"
+  "cluster.v2.membership.add_device": "Add this Mac",
+  "models.manager.move_title": "Move model",
+  "models.manager.move_in_progress": "Moving model",
+  "models.manager.move_dir_hint": "Destination directory",
+  "models.manager.move_free": "{size} free",
+  "models.manager.move_not_mounted": "Not mounted",
+  "models.manager.move_current_tag": "Current location",
+  "models.manager.move_space_warn": "May not fit",
+  "models.manager.move_done_note": "Model moved. The list has been refreshed.",
+  "models.manager.move_close": "Close",
+  "js.error.move_model_failed": "Failed to start the model move"
 }

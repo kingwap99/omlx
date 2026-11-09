@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "Alte Bereinigung auf diesem Mac vergessen. Die Bereinigung auf dem entfernten Mac wurde nicht bestätigt.",
   "cluster.v2.join.forget_cleanup_error": "Diese Bereinigung konnte nicht vergessen werden.",
   "cluster.v2.membership.waiting_request": "Wartet darauf, dass dieser Mac seinen Code anzeigt und eine Kopplungsanfrage sendet.",
-  "cluster.v2.membership.add_device": "Diesen Mac hinzufügen"
+  "cluster.v2.membership.add_device": "Diesen Mac hinzufügen",
+  "models.manager.move_title": "Modell verschieben",
+  "models.manager.move_in_progress": "Modell wird verschoben",
+  "models.manager.move_dir_hint": "Zielverzeichnis",
+  "models.manager.move_free": "{size} frei",
+  "models.manager.move_not_mounted": "Nicht gemountet",
+  "models.manager.move_current_tag": "Aktueller Speicherort",
+  "models.manager.move_space_warn": "Passt möglicherweise nicht",
+  "models.manager.move_done_note": "Modell verschoben. Die Liste wurde aktualisiert.",
+  "models.manager.move_close": "Schließen",
+  "js.error.move_model_failed": "Modellverschiebung konnte nicht gestartet werden"
 }

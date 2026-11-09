@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "旧清理已在本机被忘记。远程清理未获确认。",
   "cluster.v2.join.forget_cleanup_error": "无法忘记此清理。",
   "cluster.v2.membership.waiting_request": "等待这台 Mac 显示配对码并发送配对请求。",
-  "cluster.v2.membership.add_device": "添加这台 Mac"
+  "cluster.v2.membership.add_device": "添加这台 Mac",
+  "models.manager.move_title": "移动模型",
+  "models.manager.move_in_progress": "模型移动中",
+  "models.manager.move_dir_hint": "目标目录",
+  "models.manager.move_free": "剩余 {size}",
+  "models.manager.move_not_mounted": "未挂载",
+  "models.manager.move_current_tag": "当前位置",
+  "models.manager.move_space_warn": "空间可能不足",
+  "models.manager.move_done_note": "模型已移动，列表已刷新。",
+  "models.manager.move_close": "关闭",
+  "js.error.move_model_failed": "启动模型移动失败"
 }

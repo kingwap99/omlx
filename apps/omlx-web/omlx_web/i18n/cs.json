@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "Staré úklidové pokusy na tomto Macu byly zapomenuty. Vzdálený úklid nebyl potvrzen.",
   "cluster.v2.join.forget_cleanup_error": "Tento úklid se nepodařilo zapomenout.",
   "cluster.v2.membership.waiting_request": "Čeká se, až tento Mac zobrazí kód a odešle žádost o spárování.",
-  "cluster.v2.membership.add_device": "Přidat tento Mac"
+  "cluster.v2.membership.add_device": "Přidat tento Mac",
+  "models.manager.move_title": "Přesunout model",
+  "models.manager.move_in_progress": "Přesouvání modelu",
+  "models.manager.move_dir_hint": "Cílový adresář",
+  "models.manager.move_free": "Volných {size}",
+  "models.manager.move_not_mounted": "Nepřipojeno",
+  "models.manager.move_current_tag": "Aktuální umístění",
+  "models.manager.move_space_warn": "Možná se nevejde",
+  "models.manager.move_done_note": "Model přesunut. Seznam byl obnoven.",
+  "models.manager.move_close": "Zavřít",
+  "js.error.move_model_failed": "Spušení přesunu modelu selhalo"
 }

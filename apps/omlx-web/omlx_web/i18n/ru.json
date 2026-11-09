@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "Прежняя очистка забыта на этом Mac. Очистка на удалённой стороне не подтверждена.",
   "cluster.v2.join.forget_cleanup_error": "Не удалось забыть эту очистку.",
   "cluster.v2.membership.waiting_request": "Ожидание, пока этот Mac покажет код и отправит запрос на сопряжение.",
-  "cluster.v2.membership.add_device": "Добавить этот Mac"
+  "cluster.v2.membership.add_device": "Добавить этот Mac",
+  "models.manager.move_title": "Переместить модель",
+  "models.manager.move_in_progress": "Перемещение модели",
+  "models.manager.move_dir_hint": "Целевой каталог",
+  "models.manager.move_free": "Свободно {size}",
+  "models.manager.move_not_mounted": "Не смонтирован",
+  "models.manager.move_current_tag": "Текущее расположение",
+  "models.manager.move_space_warn": "Может не поместиться",
+  "models.manager.move_done_note": "Модель перемещена. Список обновлён.",
+  "models.manager.move_close": "Закрыть",
+  "js.error.move_model_failed": "Не удалось начать перемещение модели"
 }

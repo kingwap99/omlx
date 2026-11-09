@@ -57,6 +57,9 @@
     <!-- Model settings snapshot apply (optimal / recipe) -->
     {% include "dashboard/_modal_settings_apply.html" %}
 
+    <!-- Move Model between model dirs -->
+    {% include "dashboard/_modal_move_model.html" %}
+
     <!-- HF Mirror Settings Modal -->
     <dialog x-effect="showHfMirrorModal ? $el.showModal() : $el.close()" x-cloak
          class="dashboard-dialog fixed inset-0 z-50 overflow-y-auto"

@@ -8132,6 +8132,30 @@ def _free_disk_bytes(path: str | Path) -> int:
         return 0
 
 
+@router.get("/api/hf/model-dirs")
+async def list_model_dirs(is_admin: bool = Depends(require_admin)):
+    """Configured model directories with free space, for the move dialog."""
+    global_settings = _get_global_settings()
+    if global_settings is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    dirs = global_settings.model.get_model_dirs(global_settings.base_path)
+    out = []
+    for index, model_dir in enumerate(dirs):
+        exists = await asyncio.to_thread(model_dir.exists)
+        free = (
+            await asyncio.to_thread(_free_disk_bytes, model_dir) if exists else 0
+        )
+        out.append(
+            {
+                "path": str(model_dir),
+                "index": index,
+                "free_bytes": free,
+                "exists": exists,
+            }
+        )
+    return {"dirs": out}
+
+
 @router.get("/api/hf/recommendations")
 async def get_model_recommendations(
     is_admin: bool = Depends(require_admin),
@@ -8755,6 +8779,29 @@ async def move_hf_model(
         raise HTTPException(
             status_code=400, detail="Model is already in that directory"
         )
+    if not dest_root.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Destination drive is not mounted: {dest_root}",
+        )
+
+    # Reject impossible cross-volume moves upfront so the dialog can show the
+    # reason now, not after a partial copy fails in the background task.
+    required = sum(f.stat().st_size for f in model_path.rglob("*") if f.is_file())
+    try:
+        same_volume = os.stat(model_path).st_dev == os.stat(dest_root).st_dev
+    except OSError:
+        same_volume = False
+    if not same_volume:
+        free = shutil.disk_usage(dest_root).free
+        if required > free:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Not enough free space at the destination: need "
+                    f"{format_size(required)}, have {format_size(free)}"
+                ),
+            )
 
     # Keep the org-folder layout (owner/model) at the destination.
     rel = model_path.relative_to(parent_model_dir)

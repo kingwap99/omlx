@@ -277,3 +277,41 @@ def test_move_tree_with_progress_copies_files(tmp_path):
     assert state["total_bytes"] > 0
     assert state["moved_bytes"] == state["total_bytes"]
     assert (tmp / "owner" / "model" / "config.json").is_file()
+
+
+async def test_model_dirs_endpoint_lists_space(tmp_path):
+    src_root = tmp_path / "primary"
+    dest_root = tmp_path / "extra"
+    src_root.mkdir()
+    # dest_root intentionally missing: reported as not mounted, free 0.
+    settings = _settings_with_dirs(tmp_path, src_root, dest_root)
+
+    with patch.object(admin_routes, "_get_global_settings", lambda: settings):
+        result = await admin_routes.list_model_dirs(is_admin=True)
+
+    dirs = result["dirs"]
+    assert [d["index"] for d in dirs] == [0, 1]
+    assert dirs[0]["path"] == str(src_root.resolve())
+    assert dirs[0]["exists"] is True
+    assert dirs[0]["free_bytes"] > 0
+    assert dirs[1]["exists"] is False
+    assert dirs[1]["free_bytes"] == 0
+
+
+async def test_move_rejects_unmounted_destination(tmp_path):
+    src_root = tmp_path / "primary"
+    src_root.mkdir()
+    _make_checkpoint(src_root, "owner", "model")
+    missing = tmp_path / "gone"
+    settings = _settings_with_dirs(tmp_path, src_root, missing)
+
+    with patch.object(admin_routes, "_get_global_settings", lambda: settings), \
+         patch.object(admin_routes, "_get_engine_pool", lambda: None), \
+         patch.object(admin_routes, "_hf_downloader", None), \
+         pytest.raises(HTTPException) as exc:
+        await move_hf_model(
+            ModelMoveRequest(name="owner/model", dest_dir=str(missing)),
+            is_admin=True,
+        )
+    assert exc.value.status_code == 400
+    assert "not mounted" in str(exc.value.detail).lower()

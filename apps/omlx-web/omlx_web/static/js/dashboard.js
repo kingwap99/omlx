@@ -515,8 +515,15 @@
             hfDestDir: '',
             msDestDir: '',
             // Row state for moving models between model directories.
-            hfMoveConfirm: null,
             hfMoveDest: '',
+            // Move dialog state: the picked row plus free-space rows and any
+            // start error shown inside the dialog.
+            hfMoveDialog: false,
+            hfMoveName: '',
+            hfMoveModel: null,
+            hfMoveId: null,
+            moveDirRows: [],
+            hfMoveError: '',
             // move name -> latest status row from /api/hf/models/move.
             hfMoves: {},
             _moveRefreshTimer: null,
@@ -8013,10 +8020,99 @@
 
             hfMoveRow(modelName) {
                 for (const m of Object.values(this.hfMoves)) {
-                    // Done rows drop out once the listings have refreshed.
-                    if (m.name === modelName && m.status !== 'done') return m;
+                    // Done rows drop out once the listings have refreshed; so
+                    // do errored ones, which keeps the row actionable. The
+                    // dialog still finds the failed move by id to show details
+                    // and allow a retry.
+                    if (m.name === modelName && m.status !== 'done' && m.status !== 'error') {
+                        return m;
+                    }
                 }
                 return null;
+            },
+
+            // Rows that can start a move: same guards as the backend, so a
+            // disabled badge never opens a dialog that can only fail.
+            modelMoveDisabled(model) {
+                return model.source_type === 'hf_cache'
+                    || model.model_format === 'gguf'
+                    || !!this.hfMoveRow(model.name);
+            },
+
+            // Latest status row for the model currently in the dialog.
+            moveActiveRow() {
+                if (!this.hfMoveId) return null;
+                return this.hfMoves[this.hfMoveId] || null;
+            },
+
+            moveSourceDirPath() {
+                return this.hfMoveModel && this.hfMoveModel.model_dir
+                    ? String(this.hfMoveModel.model_dir).replace(/\/+$/, '')
+                    : '';
+            },
+
+            moveSizeBytes() {
+                return this.hfMoveModel ? (this.hfMoveModel.size || 0) : 0;
+            },
+
+            movePercent() {
+                const m = this.moveActiveRow();
+                if (!m) return 0;
+                if (m.status === 'finalizing') return 99;
+                const total = m.total_bytes || 0;
+                if (total <= 0) return 5;
+                return Math.min(95, Math.round((m.moved_bytes / total) * 100));
+            },
+
+            // Open the move dialog; fetch free space per directory on demand.
+            async openMoveDialog(model) {
+                if (this.modelDirChoices().length < 2) return;
+                if (this.modelMoveDisabled(model) && !this.hfMoveRow(model.name)) return;
+                this.hfMoveDialog = true;
+                this.hfMoveName = model.name;
+                this.hfMoveModel = model;
+                this.hfMoveError = '';
+                const running = this.hfMoveRow(model.name);
+                this.hfMoveId = running ? Object.keys(this.hfMoves)
+                    .find(id => this.hfMoves[id] === running) : null;
+                // Default to the first directory that is not the source dir.
+                const srcDir = model.model_dir || '';
+                this.hfMoveDest = this.modelDirChoices()
+                    .find(d => !String(srcDir).startsWith(String(d).replace(/\/+$/, '') + '/'))
+                    || '';
+                try {
+                    const response = await fetch('/admin/api/hf/model-dirs');
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.moveDirRows = (data.dirs || []).map(d => ({
+                            ...d, path: String(d.path).replace(/\/+$/, ''),
+                        }));
+                        if (this.hfMoveDest) {
+                            this.hfMoveDest = String(this.hfMoveDest).replace(/\/+$/, '');
+                        }
+                    }
+                } catch (err) {
+                    console.error('Failed to load model dirs:', err);
+                }
+                // Without the endpoint, still offer the configured choices.
+                if (!this.moveDirRows.length) {
+                    this.moveDirRows = this.modelDirChoices().map((p, index) => ({
+                        path: String(p).replace(/\/+$/, ''), index, free_bytes: 0, exists: true,
+                    }));
+                }
+                if (running) this.startMoveRefresh();
+            },
+
+            closeMoveDialog() {
+                const done = this.moveActiveRow() && this.moveActiveRow().status === 'done';
+                this.hfMoveDialog = false;
+                if (done) {
+                    // Listing refresh in refreshMoves takes it from here.
+                    return;
+                }
+                this.hfMoveName = '';
+                this.hfMoveModel = null;
+                this.hfMoveId = null;
             },
 
             moveLabel(m) {
@@ -8034,20 +8130,10 @@
                 return window.t('models.manager.move_copying');
             },
 
-            openMoveConfirm(modelName) {
-                const choices = this.modelDirChoices();
-                if (choices.length < 2) return;
-                this.hfMoveConfirm = modelName;
-                // Default to the first directory that is not the source dir.
-                const info = (this.hfModels || []).find(m => m.name === modelName);
-                const srcDir = info && info.path ? info.path : '';
-                this.hfMoveDest = choices.find(d => !srcDir.startsWith(d + '/')) || choices[0];
-            },
-
             async moveHFModel(modelName) {
                 const dest = this.hfMoveDest;
-                this.hfMoveConfirm = null;
                 if (!dest) return;
+                this.hfMoveError = '';
                 try {
                     const response = await fetch('/admin/api/hf/models/move', {
                         method: 'POST',
@@ -8057,16 +8143,16 @@
                     if (response.ok) {
                         const data = await response.json();
                         this.hfMoves = { ...this.hfMoves, [data.move.move_id]: data.move };
+                        this.hfMoveId = data.move.move_id;
                         this.startMoveRefresh();
                     } else {
                         const data = await response.json().catch(() => ({}));
-                        this.hfError = data.detail || window.t('js.error.move_model_failed');
-                        setTimeout(() => { this.hfError = ''; }, 5000);
+                        // Stay open so the destination can be changed and retried.
+                        this.hfMoveError = data.detail || window.t('js.error.move_model_failed');
                     }
                 } catch (err) {
                     console.error('Failed to start model move:', err);
-                    this.hfError = window.t('js.error.move_model_failed');
-                    setTimeout(() => { this.hfError = ''; }, 5000);
+                    this.hfMoveError = window.t('js.error.move_model_failed');
                 }
             },
 

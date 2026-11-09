@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "Limpieza anterior olvidada en este Mac. No se confirmó la limpieza remota.",
   "cluster.v2.join.forget_cleanup_error": "No se pudo olvidar esta limpieza.",
   "cluster.v2.membership.waiting_request": "Esperando a que este Mac muestre su código y envíe una solicitud de emparejamiento.",
-  "cluster.v2.membership.add_device": "Añadir este Mac"
+  "cluster.v2.membership.add_device": "Añadir este Mac",
+  "models.manager.move_title": "Mover modelo",
+  "models.manager.move_in_progress": "Moviendo modelo",
+  "models.manager.move_dir_hint": "Directorio de destino",
+  "models.manager.move_free": "{size} libres",
+  "models.manager.move_not_mounted": "No montado",
+  "models.manager.move_current_tag": "Ubicación actual",
+  "models.manager.move_space_warn": "Puede que no quepa",
+  "models.manager.move_done_note": "Modelo movido. La lista se ha actualizado.",
+  "models.manager.move_close": "Cerrar",
+  "js.error.move_model_failed": "No se pudo iniciar el movimiento del modelo"
 }

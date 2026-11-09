@@ -2473,5 +2473,15 @@
   "cluster.v2.join.cleanup_forgotten": "이 Mac에서 이전 정리가 삭제되었습니다. 원격 정리는 확인되지 않았습니다.",
   "cluster.v2.join.forget_cleanup_error": "이 정리 작업을 삭제할 수 없습니다.",
   "cluster.v2.membership.waiting_request": "이 Mac이 코드를 표시하고 페어링 요청을 보내기를 기다리는 중입니다.",
-  "cluster.v2.membership.add_device": "이 Mac 추가"
+  "cluster.v2.membership.add_device": "이 Mac 추가",
+  "models.manager.move_title": "모델 이동",
+  "models.manager.move_in_progress": "모델 이동 중",
+  "models.manager.move_dir_hint": "대상 디렉터리",
+  "models.manager.move_free": "{size} 여백",
+  "models.manager.move_not_mounted": "마운트되지 않음",
+  "models.manager.move_current_tag": "현재 위치",
+  "models.manager.move_space_warn": "공간 부족 가능성",
+  "models.manager.move_done_note": "모델이 이동되었습니다. 목록을 새로고침했습니다.",
+  "models.manager.move_close": "닫기",
+  "js.error.move_model_failed": "모델 이동을 시작하지 못했습니다"
 }
