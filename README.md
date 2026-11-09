@@ -1,48 +1,61 @@
-## ⚡ 本 Fork 的改動（相對於上游 [jundot/omlx](https://github.com/jundot/omlx)）
+## ⚡ Changes in this fork (vs upstream [jundot/omlx](https://github.com/jundot/omlx))
 
-> 分支：`feat/download-dest-and-model-move`（基於上游 `2165e75`）。
-> 動機：執行主機內建 SSD 只有 1TB，需要把模型下載到指定的 `model_dirs`、
-> 並在多個 model dirs（含外接碟）之間搬移模型，同時保留多版本測試用模型。
+> Branch: `feat/download-dest-and-model-move` (based on upstream `2165e75`).
+> Motivation: the host's internal SSD is only 1 TB, so downloads need to land in a
+> chosen `model_dirs` entry and models need to move between directories (including
+> external drives) while several versions are kept for testing.
 
-**1. 下載時可指定目的地目錄（dest_dir）**
+**1. Pick a destination directory when downloading (`dest_dir`)**
 
-- `POST /api/hf/download` 與 `/api/ms/download` 接受 `dest_dir`，只允許設定中的
-  `model_dirs` 之一（白名單驗證、必須實際掛載，避免寫進未掛載的 `/Volumes` 影子目錄）。
-- 下載任務（`DownloadTask`）在開始當下快照目的地並持久化；重試與服務重啟續傳
-  一律回到原目錄，即使主要目錄之後改變。
-- 更新既有模型時若未指定目的地，自動跟隨該模型現存的下載目錄，不會重複下一份。
-- 後台下載表單（HuggingFace / ModelScope）與模型詳情面板都有 **Download to**
-  選單；僅在設定超過一個 model dir 時顯示。詳情面板選擇目的地會即時顯示該碟的
-  剩餘空間，空間不足時禁用下載按鈕。
+- `POST /api/hf/download` and `/api/ms/download` accept `dest_dir`, restricted to the
+  configured `model_dirs` (whitelist-validated, must be actually mounted, so nothing
+  is written into a shadow `/Volumes` path when a drive is unplugged).
+- Each download task snapshots its destination at start and persists it; retries and
+  resume-after-restart always return to the original directory, even if the primary
+  directory changed since.
+- Updating an existing model without a destination follows the directory that model
+  was downloaded to, instead of downloading a second copy.
+- The admin download forms (HuggingFace / ModelScope) and the model detail panel
+  grow a **Download to** picker, shown only when more than one model directory is
+  configured. The detail panel refreshes the target volume's free space and disables
+  the button when it does not fit.
 
-**2. 模型可在 model dirs 之間搬移**
+**2. Move models between model directories**
 
-- 新增 `POST /admin/api/hf/models/move` 與 `GET /admin/api/hf/models/move/{id}`
-  （輪詢進度）。同磁碟卷用 rename；跨卷先檢查剩餘空間，複製到隱藏暫存目錄
-  （記錄位元組進度）、驗證後改名、再刪來源。
-- 搬移前先取消該目錄進行中的下載並卸載引擎；保留 org 子目錄佈局、搬完清空目錄；
-  完成後刷新引擎池，per-model 設定（別名、favorite、猜測設定等）原樣保留。
-- 模型清單每列有搬移按鈕與進度徽章。GGUF 模型與 HF cache 條目明確拒絕搬移。
+- New `POST /admin/api/hf/models/move` and `GET /admin/api/hf/models/move/{id}`
+  (progress polling). Same-volume moves are renames; cross-volume moves check free
+  space first, copy into a hidden staging directory (byte progress), verify, rename,
+  then delete the source.
+- In-flight downloads for the source directory are cancelled and the engine unloaded
+  before a move; organization subfolder layout is preserved, emptied directories are
+  cleaned up, and per-model settings (alias, favorite, speculative config) survive
+  the engine-pool refresh afterwards.
+- Every model row grows a move action with a progress badge. GGUF models and HF
+  cache entries are explicitly refused.
 
-**3. 清單標示模型存放位置**
+**3. Show where each model lives**
 
-- `/api/hf/models` 每筆回傳 `model_dir` 與 `model_dir_index`（0 = 主要目錄）。
-- Models → Manager 每列顯示存放目錄徽章：主要目錄為灰色「Primary」，其他目錄
-  以磁碟區名稱顯示（`/Volumes/SSD960/models` → `SSD960`），完整路徑在提示框。
-- 另外微調了下載表單三個欄位的寬度配置。
+- `/api/hf/models` rows now carry `model_dir` and `model_dir_index` (0 = primary).
+- Models → Manager rows show a directory badge: grey "Primary" for the main
+  directory, otherwise the volume name (`/Volumes/SSD960/models` → `SSD960`), with
+  the full path in the tooltip.
+- The three downloader form fields got balanced widths as well.
 
-**已知限制**：搬移任務狀態存在記憶體，服務重啟會中斷進行中的搬移（殘留暫存目錄
-會在下次同名搬移時清掉）；macOS 選單列 App 的下載畫面尚未提供目的地選單（不傳
-`dest_dir` 即走預設目錄）。
+**Known limits**: move progress lives in memory, so a restart interrupts an
+in-flight move (its staging directory is cleaned up by the next move of the same
+model); the macOS menu-bar app's downloads screen has no destination picker yet (it
+keeps using the default directory when `dest_dir` is absent).
 
-**部署**：`scripts/deploy-dest-move.sh`。DMG 安裝的 `/Applications/oMLX.app`
-受 macOS App Management 保護（sudo 亦 EPERM），腳本改為把分支程式碼鋪到
-`~/omlx-src`、以 `run-omlx.sh` 借用 App 內建 Python runtime，並重指 launchd
-plist（備份後修改）。注意：之後升級 oMLX.app 時新的 DMG 不會自動生效，需重新
-執行部署腳本或還原 plist。
+**Deployment**: `scripts/deploy-dest-move.sh`. A DMG install keeps
+`/Applications/oMLX.app` under macOS App Management (even `sudo` gets EPERM), so the
+script stages this branch into `~/omlx-src`, borrows the app's bundled Python
+runtime via `run-omlx.sh`, and repoints the launchd plist (backed up first). After
+upgrading oMLX.app the new DMG does not take effect automatically; rerun the deploy
+script or restore the plist.
 
-**驗證**：完整測試套件通過（含新增 `tests/test_download_dest_and_move.py`），
-已部署至 192.168.31.33:8258 並線上驗證。
+**Verification**: the full test suite passes (including the new
+`tests/test_download_dest_and_move.py`); deployed and verified live on
+192.168.31.33:8258.
 
 ---
 

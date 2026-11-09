@@ -1,3 +1,61 @@
+## ⚡ 이 포크의 변경 사항 (업스트림 [jundot/omlx](https://github.com/jundot/omlx) 대비)
+
+> 브랜치: `feat/download-dest-and-model-move` (업스트림 `2165e75` 기반).
+> 동기: 호스트 내장 SSD가 1TB뿐이라 모델을 지정된 `model_dirs`로 다운로드하고,
+> 여러 모델 디렉터리(외장 드라이브 포함) 사이에서 이동하면서 여러 버전을
+> 테스트용으로 유지해야 합니다.
+
+**1. 다운로드 시 목적지 디렉터리 지정 (`dest_dir`)**
+
+- `POST /api/hf/download`와 `/api/ms/download`가 `dest_dir`를 받으며, 설정된
+  `model_dirs`만 허용합니다 (화이트리스트 검증, 실제 마운트 필수 — 마운트되지 않은
+  `/Volumes` 경로에 쓰는 것 방지).
+- 다운로드 작업은 시작 시 목적지를 스냅샷해 저장하고, 재시도 및 서비스 재시작 후
+  재개 시에도 항상 원본 디렉터리로 돌아갑니다 (주 디렉터리가 나중에 바뀌어도 동일).
+- 기존 모델을 업데이트할 때 목적지를 지정하지 않으면 해당 모델이 이미 다운로드된
+  디렉터리를 따라 중복 다운로드를 방지합니다.
+- 관리자 다운로드 폼(HuggingFace / ModelScope)과 모델 상세 패널에 **Download to**
+  선택이 추가되며, 모델 디렉터리가 둘 이상일 때만 표시됩니다. 상세 패널에서
+  목적지를 선택하면 해당 볼륨의 여유 공간을 실시간으로 보여주고, 공간이 부족하면
+  다운로드 버튼을 비활성화합니다.
+
+**2. 모델 디렉터리 간 모델 이동**
+
+- `POST /admin/api/hf/models/move`와 `GET /admin/api/hf/models/move/{id}`
+  (진행률 폴링) 신설. 같은 볼륨은 rename, 다른 볼륨은 여유 공간 확인 후 숨김 임시
+  디렉터리로 복사(바이트 단위 진행률 기록), 검증 후 이름 변경, 원본 삭제 순으로
+  진행합니다.
+- 이동 전 해당 디렉터리의 진행 중 다운로드를 취소하고 엔진을 언로드하며, org 하위
+  폴더 구조는 유지되고 비운 디렉터리는 정리됩니다. 완료 후 엔진 풀을 갱신하며
+  모델별 설정(별칭, favorite, 추측 설정 등)은 그대로 보존됩니다.
+- 모델 목록 각 행에 이동 버튼과 진행률 배지가 있습니다. GGUF 모델과 HF cache
+  항목은 이동을 명시적으로 거부합니다.
+
+**3. 목록에 모델 저장 위치 표시**
+
+- `/api/hf/models`의 각 항목이 `model_dir`과 `model_dir_index`(0 = 주 디렉터리)를
+  반환합니다.
+- Models → Manager의 각 행에 저장 디렉터리 배지를 표시합니다: 주 디렉터리는 회색
+  "Primary", 그 외에는 볼륨 이름 표시(`/Volumes/SSD960/models` → `SSD960`),
+  전체 경로는 툴팁에 표시됩니다.
+- 다운로드 폼의 세 필드 너비 구성도 조정했습니다.
+
+**알려진 제한**: 이동 작업 상태는 메모리에만 저장되어 서비스가 재시작되면 진행
+중이던 이동이 중단됩니다 (잔여 임시 디렉터리는 다음 번 같은 모델 이동 시 정리됨).
+macOS 메뉴바 앱의 다운로드 화면에는 아직 목적지 선택이 없습니다 (`dest_dir`을
+보내지 않으면 기본 디렉터리 사용).
+
+**배포**: `scripts/deploy-dest-move.sh`. DMG 설치본의 `/Applications/oMLX.app`은
+macOS App Management로 보호되어 (sudo도 EPERM) 스크립트가 브랜치 코드를
+`~/omlx-src`에 전개하고 `run-omlx.sh`로 앱 내장 Python 런타임을 빌려 쓰며
+launchd plist를 다시 가리킵니다 (백업 후 수정). oMLX.app을 업그레이드하면 새 DMG가
+자동으로 적용되지 않으므로 배포 스크립트를 다시 실행하거나 plist를 복원해야 합니다.
+
+**검증**: 전체 테스트 스위트 통과 (신규 `tests/test_download_dest_and_move.py`
+포함), 192.168.31.33:8258에 배포 후 라이브 검증 완료.
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-rounded-dark.svg" width="140">

@@ -1,3 +1,65 @@
+## ⚡ Modifications de ce fork (par rapport à l'amont [jundot/omlx](https://github.com/jundot/omlx))
+
+> Branche : `feat/download-dest-and-model-move` (basée sur l'amont `2165e75`).
+> Motivation : le SSD interne de l'hôte ne fait que 1 To ; il faut télécharger les
+> modèles dans un répertoire `model_dirs` choisi et les déplacer entre répertoires
+> (y compris des disques externes) tout en conservant plusieurs versions pour les tests.
+
+**1. Choisir le répertoire de destination au téléchargement (`dest_dir`)**
+
+- `POST /api/hf/download` et `/api/ms/download` acceptent `dest_dir`, limité aux
+  `model_dirs` configurés (liste blanche, montage réel requis, pour éviter d'écrire
+  dans un chemin `/Volumes` fantôme).
+- Chaque tâche de téléchargement enregistre et persiste sa destination au démarrage ;
+  les relances et la reprise après redémarrage reviennent toujours au répertoire
+  d'origine, même si le répertoire principal a changé depuis.
+- Mettre à jour un modèle existant sans destination suit le répertoire où le modèle
+  avait été téléchargé, au lieu d'en retélécharger une copie.
+- Les formulaires de téléchargement (HuggingFace / ModelScope) et le panneau de détail
+  du modèle affichent un sélecteur **Télécharger vers**, visible seulement si
+  plusieurs répertoires sont configurés. Le panneau de détail actualise l'espace libre
+  du volume cible et désactive le bouton si ça ne rentre pas.
+
+**2. Déplacer des modèles entre répertoires**
+
+- Nouveaux `POST /admin/api/hf/models/move` et `GET /admin/api/hf/models/move/{id}`
+  (suivi de progression). Sur le même volume : renommage ; sinon vérification de
+  l'espace libre, copie vers un répertoire caché (progression en octets),
+  vérification, renommage, puis suppression de la source.
+- Avant le déplacement, les téléchargements en cours du répertoire source sont
+  annulés et le moteur déchargé ; la hiérarchie des sous-dossiers d'organisation est
+  préservée, les répertoires vides nettoyés, et les réglages par modèle (alias,
+  favori, configuration spéculative) survivent au rafraîchissement du pool.
+- Chaque ligne de la liste gagne une action de déplacement avec badge de progression.
+  Les modèles GGUF et les entrées du cache HF sont explicitement refusés.
+
+**3. Afficher l'emplacement de chaque modèle**
+
+- Les lignes de `/api/hf/models` portent désormais `model_dir` et `model_dir_index`
+  (0 = principal).
+- Models → Manager affiche un badge de répertoire : gris « Primary » pour le
+  répertoire principal, sinon le nom du volume (`/Volumes/SSD960/models` → `SSD960`),
+  chemin complet dans l'infobulle.
+- Les trois champs du formulaire de téléchargement ont aussi reçu des largeurs équilibrées.
+
+**Limites connues** : la progression des déplacements vit en mémoire ; un
+redémarrage interrompt un déplacement en cours (le répertoire temporaire est nettoyé
+au prochain déplacement du même modèle) ; l'écran Téléchargements de l'app macOS n'a
+pas encore de sélecteur de destination (il garde le répertoire par défaut sans `dest_dir`).
+
+**Déploiement** : `scripts/deploy-dest-move.sh`. Une installation DMG place
+`/Applications/oMLX.app` sous la protection App Management de macOS (`sudo` inclus
+reçoit EPERM) ; le script installe donc cette branche dans `~/omlx-src`, emprunte le
+runtime Python de l'app via `run-omlx.sh` et redirige le plist launchd (sauvegardé au
+préalable). Après une mise à jour de oMLX.app, le nouveau DMG ne s'active pas
+automatiquement : relancer le script ou restaurer le plist.
+
+**Vérification** : la suite de tests complète passe (dont les nouveaux
+`tests/test_download_dest_and_move.py`) ; déployé et vérifié en direct sur
+192.168.31.33:8258.
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-rounded-dark.svg" width="140">
