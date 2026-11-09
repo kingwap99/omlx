@@ -7942,6 +7942,34 @@
                     .filter(Boolean);
             },
 
+            // Short readable label for a model dir path: the primary dir reads
+            // as "Primary", an external volume shows its mount name
+            // (/Volumes/SSD960/models -> SSD960), anything else the basename.
+            // Basenames alone collide (two dirs both ending in "models"), which
+            // is why the primary dir gets its own wording. The full path lives
+            // in the badge tooltip.
+            modelDirLabel(dir, index) {
+                if (!dir) return '';
+                const trimmed = String(dir).replace(/\/+$/, '');
+                if (this.isPrimaryModelDir(dir, index)) {
+                    return window.t('models.manager.dir_primary');
+                }
+                const parts = trimmed.split('/').filter(Boolean);
+                if (parts[0] === 'Volumes' && parts.length > 1) return parts[1];
+                return parts[parts.length - 1] || trimmed;
+            },
+
+            // The backend flags the primary dir by index (0). Older payloads
+            // carry no index, so fall back to comparing against the first
+            // configured directory.
+            isPrimaryModelDir(dir, index) {
+                if (index !== undefined && index !== null) return index === 0;
+                const choices = this.modelDirChoices();
+                if (!choices.length) return false;
+                const trimmed = String(dir).replace(/\/+$/, '');
+                return trimmed === String(choices[0]).replace(/\/+$/, '');
+            },
+
             startMoveRefresh() {
                 this.stopMoveRefresh();
                 this._moveRefreshTimer = setInterval(() => {

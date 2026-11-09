@@ -256,6 +256,7 @@
   "models.manager.move_finalizing": "마무리 중",
   "models.manager.move_done": "이동 완료",
   "models.manager.move_error": "이동 실패",
+  "models.manager.dir_primary": "주 디렉터리",
   "models.manager.delete_confirm": "삭제할까요?",
   "models.manager.delete_yes": "예",
   "models.manager.delete_no": "아니오",

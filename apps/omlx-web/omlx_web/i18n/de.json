@@ -256,6 +256,7 @@
   "models.manager.move_finalizing": "Abschließen",
   "models.manager.move_done": "Verschoben",
   "models.manager.move_error": "Verschieben fehlgeschlagen",
+  "models.manager.dir_primary": "Primär",
   "models.manager.delete_confirm": "Löschen?",
   "models.manager.delete_yes": "Ja",
   "models.manager.delete_no": "Nein",

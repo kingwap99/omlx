@@ -2400,6 +2400,25 @@ def _model_dirs_for_display(global_settings: Any | None) -> list[Path]:
         return []
 
 
+def _model_dir_for_path(
+    path: Path | str | None, model_dirs: list[Path]
+) -> tuple[str | None, int | None]:
+    """(dir path as text, index) of the discovery dir a model sits under."""
+    if not path:
+        return None, None
+    try:
+        candidate = Path(path).expanduser()
+    except (TypeError, ValueError):
+        return None, None
+    for index, model_dir in enumerate(model_dirs):
+        try:
+            candidate.relative_to(model_dir)
+        except ValueError:
+            continue
+        return str(model_dir), index
+    return None, None
+
+
 @router.get("/api/models")
 async def list_models(is_admin: bool = Depends(require_admin)):
     """
@@ -8411,6 +8430,12 @@ async def list_hf_models(is_admin: bool = Depends(require_admin)):
             models[-1]["model_format"] = "gguf"
 
     # Sort by the UI display name so organization prefixes group together.
+    for model_row in models:
+        model_dir, dir_index = _model_dir_for_path(
+            model_row.get("path"), model_dirs
+        )
+        model_row["model_dir"] = model_dir
+        model_row["model_dir_index"] = dir_index
     models.sort(key=lambda m: m["display_name"].lower())
     return {"models": models}
 

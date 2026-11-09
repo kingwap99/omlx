@@ -256,6 +256,7 @@
   "models.manager.move_finalizing": "Завершение",
   "models.manager.move_done": "Перемещено",
   "models.manager.move_error": "Ошибка перемещения",
+  "models.manager.dir_primary": "Основной",
   "models.manager.delete_confirm": "Удалить?",
   "models.manager.delete_yes": "Да",
   "models.manager.delete_no": "Нет",

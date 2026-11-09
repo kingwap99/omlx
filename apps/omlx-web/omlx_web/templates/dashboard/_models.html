@@ -134,6 +134,14 @@
                                                     <span class="badge bg-neutral-100 text-neutral-500 border-neutral-200 flex-shrink-0 whitespace-nowrap"
                                                           :title="window.t('settings.models.table.gguf_tooltip')">GGUF</span>
                                                 </template>
+                                                <template x-if="model.model_dir && modelDirChoices().length > 1">
+                                                    <span class="badge flex-shrink-0 max-w-[130px] truncate"
+                                                          :class="isPrimaryModelDir(model.model_dir, model.model_dir_index)
+                                                              ? 'bg-neutral-100 text-neutral-500 border-neutral-200'
+                                                              : 'bg-sky-50 text-sky-700 border-sky-200'"
+                                                          :title="model.model_dir"
+                                                          x-text="modelDirLabel(model.model_dir, model.model_dir_index)"></span>
+                                                </template>
                                                 <button x-data="{ copied: false }"
                                                         @click.stop="copyToClipboard(apiModelName(model.name)); copied = true; setTimeout(() => copied = false, 2000)"
                                                         class="p-1 rounded-md transition-all flex-shrink-0"

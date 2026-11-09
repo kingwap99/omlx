@@ -256,6 +256,7 @@
   "models.manager.move_finalizing": "Dokončování",
   "models.manager.move_done": "Přesunuto",
   "models.manager.move_error": "Přesun se nezdařil",
+  "models.manager.dir_primary": "Primární",
   "models.manager.delete_confirm": "Smazat?",
   "models.manager.delete_yes": "Ano",
   "models.manager.delete_no": "Ne",

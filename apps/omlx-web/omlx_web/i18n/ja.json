@@ -256,6 +256,7 @@
   "models.manager.move_finalizing": "仕上げ中",
   "models.manager.move_done": "移動完了",
   "models.manager.move_error": "移動に失敗",
+  "models.manager.dir_primary": "プライマリ",
   "models.manager.delete_confirm": "削除しますか？",
   "models.manager.delete_yes": "はい",
   "models.manager.delete_no": "いいえ",

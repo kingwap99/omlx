@@ -256,6 +256,7 @@
   "models.manager.move_finalizing": "Finalizing",
   "models.manager.move_done": "Moved",
   "models.manager.move_error": "Move failed",
+  "models.manager.dir_primary": "Primary",
   "models.manager.delete_confirm": "Delete?",
   "models.manager.delete_yes": "Yes",
   "models.manager.delete_no": "No",
