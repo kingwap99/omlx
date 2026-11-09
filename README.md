@@ -1,3 +1,51 @@
+## ⚡ 本 Fork 的改動（相對於上游 [jundot/omlx](https://github.com/jundot/omlx)）
+
+> 分支：`feat/download-dest-and-model-move`（基於上游 `2165e75`）。
+> 動機：執行主機內建 SSD 只有 1TB，需要把模型下載到指定的 `model_dirs`、
+> 並在多個 model dirs（含外接碟）之間搬移模型，同時保留多版本測試用模型。
+
+**1. 下載時可指定目的地目錄（dest_dir）**
+
+- `POST /api/hf/download` 與 `/api/ms/download` 接受 `dest_dir`，只允許設定中的
+  `model_dirs` 之一（白名單驗證、必須實際掛載，避免寫進未掛載的 `/Volumes` 影子目錄）。
+- 下載任務（`DownloadTask`）在開始當下快照目的地並持久化；重試與服務重啟續傳
+  一律回到原目錄，即使主要目錄之後改變。
+- 更新既有模型時若未指定目的地，自動跟隨該模型現存的下載目錄，不會重複下一份。
+- 後台下載表單（HuggingFace / ModelScope）與模型詳情面板都有 **Download to**
+  選單；僅在設定超過一個 model dir 時顯示。詳情面板選擇目的地會即時顯示該碟的
+  剩餘空間，空間不足時禁用下載按鈕。
+
+**2. 模型可在 model dirs 之間搬移**
+
+- 新增 `POST /admin/api/hf/models/move` 與 `GET /admin/api/hf/models/move/{id}`
+  （輪詢進度）。同磁碟卷用 rename；跨卷先檢查剩餘空間，複製到隱藏暫存目錄
+  （記錄位元組進度）、驗證後改名、再刪來源。
+- 搬移前先取消該目錄進行中的下載並卸載引擎；保留 org 子目錄佈局、搬完清空目錄；
+  完成後刷新引擎池，per-model 設定（別名、favorite、猜測設定等）原樣保留。
+- 模型清單每列有搬移按鈕與進度徽章。GGUF 模型與 HF cache 條目明確拒絕搬移。
+
+**3. 清單標示模型存放位置**
+
+- `/api/hf/models` 每筆回傳 `model_dir` 與 `model_dir_index`（0 = 主要目錄）。
+- Models → Manager 每列顯示存放目錄徽章：主要目錄為灰色「Primary」，其他目錄
+  以磁碟區名稱顯示（`/Volumes/SSD960/models` → `SSD960`），完整路徑在提示框。
+- 另外微調了下載表單三個欄位的寬度配置。
+
+**已知限制**：搬移任務狀態存在記憶體，服務重啟會中斷進行中的搬移（殘留暫存目錄
+會在下次同名搬移時清掉）；macOS 選單列 App 的下載畫面尚未提供目的地選單（不傳
+`dest_dir` 即走預設目錄）。
+
+**部署**：`scripts/deploy-dest-move.sh`。DMG 安裝的 `/Applications/oMLX.app`
+受 macOS App Management 保護（sudo 亦 EPERM），腳本改為把分支程式碼鋪到
+`~/omlx-src`、以 `run-omlx.sh` 借用 App 內建 Python runtime，並重指 launchd
+plist（備份後修改）。注意：之後升級 oMLX.app 時新的 DMG 不會自動生效，需重新
+執行部署腳本或還原 plist。
+
+**驗證**：完整測試套件通過（含新增 `tests/test_download_dest_and_move.py`），
+已部署至 192.168.31.33:8258 並線上驗證。
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-rounded-dark.svg" width="140">
