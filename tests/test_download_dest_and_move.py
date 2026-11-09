@@ -122,6 +122,7 @@ def _settings_with_dirs(tmp_path, *dirs):
 
 def test_resolve_download_dest(tmp_path):
     allowed = tmp_path / "allowed"
+    allowed.mkdir()
     outside = tmp_path / "outside"
     settings = _settings_with_dirs(tmp_path, allowed)
     with patch.object(admin_routes, "_get_global_settings", lambda: settings):
@@ -135,6 +136,35 @@ def test_resolve_download_dest(tmp_path):
         # A subdirectory is outside the listing scan, so it fails too.
         with pytest.raises(HTTPException):
             admin_routes._resolve_download_dest(str(allowed / "nested"))
+        # A configured directory that is gone (unmounted volume) is refused.
+        missing = tmp_path / "missing"
+        settings = _settings_with_dirs(tmp_path, missing)
+        with patch.object(admin_routes, "_get_global_settings", lambda: settings):
+            with pytest.raises(HTTPException) as exc:
+                admin_routes._resolve_download_dest(str(missing))
+            assert exc.value.status_code == 400
+
+
+async def test_update_follows_an_existing_secondary_directory(tmp_path):
+    primary = tmp_path / "models"
+    extra = tmp_path / "extra"
+    primary.mkdir()
+    (extra / "owner" / "model" / ".cache" / "huggingface" / "download").mkdir(
+        parents=True
+    )
+    (extra / "owner" / "model" / ".cache" / "huggingface" / "download" / "a.metadata").write_text("{}")
+
+    async def _run(self, task_id, token):
+        pass
+
+    with patch.object(HFDownloader, "_run_download", new=_run):
+        downloader = HFDownloader(
+            model_dir=str(primary),
+            model_dirs=[str(primary), str(extra)],
+        )
+        task = await downloader.start_download("owner/model")
+    assert task.dest_dir == str(extra)
+    assert downloader.destination_dirs() == [primary, extra]
 
 
 # ---------------------------------------------------------------------------

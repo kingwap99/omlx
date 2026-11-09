@@ -1380,6 +1380,7 @@ async def _apply_model_dirs_runtime(model_dirs: list[str]) -> tuple[bool, str]:
     primary_dir = str(primary_path)
     if _hf_downloader is not None:
         _hf_downloader.update_model_dir(primary_dir)
+        _hf_downloader.update_model_dirs(active_model_dirs)
     if _ms_downloader is not None:
         _ms_downloader.update_model_dir(primary_dir)
 
@@ -7962,6 +7963,21 @@ def _resolve_download_dest(dest_dir: str) -> str:
                 f"directories: {[str(p) for p in allowed]}"
             ),
         )
+    if not requested.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Destination directory does not exist: {requested}",
+        )
+    # /Volumes paths can exist as empty mount points; writing there would
+    # fill the system volume instead of the intended external disk.
+    parts = requested.parts
+    if len(parts) >= 3 and parts[1] == "Volumes":
+        volume = Path(parts[0], parts[1], parts[2])
+        if not os.path.ismount(volume):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Volume is not mounted: {volume}",
+            )
     return str(requested)
 
 
@@ -8191,11 +8207,14 @@ async def search_hf_models(
 async def get_hf_model_info(
     request: Request,
     repo_id: str = "",
+    dest_dir: str = "",
     is_admin: bool = Depends(require_admin),
 ):
     """Get detailed model information from HuggingFace.
 
     An ``X-HF-Token`` header carries a token for a gated or private repo.
+    ``dest_dir`` makes the disk figures and the local-file comparison follow
+    the directory a download would go to.
     """
     if not repo_id.strip():
         raise HTTPException(
@@ -8209,7 +8228,13 @@ async def get_hf_model_info(
     repo_id = repo_id.strip()
     local_dir = None
     if _hf_downloader is not None and _is_repo_id(repo_id):
-        local_dir = _hf_downloader.model_dir / repo_id
+        for root in _hf_downloader.destination_dirs():
+            candidate = root / repo_id
+            if candidate.exists():
+                local_dir = candidate
+                break
+        if local_dir is None:
+            local_dir = _hf_downloader.model_dir / repo_id
     try:
         result = await HFDownloader.get_model_info(
             repo_id=repo_id,
@@ -8217,8 +8242,14 @@ async def get_hf_model_info(
             token=request.headers.get("x-hf-token") or None,
         )
         if _hf_downloader is not None:
+            free_root = _hf_downloader.model_dir
+            if dest_dir.strip():
+                try:
+                    free_root = Path(_resolve_download_dest(dest_dir))
+                except HTTPException:
+                    free_root = _hf_downloader.model_dir
             result["disk_free"] = await asyncio.to_thread(
-                _free_disk_bytes, _hf_downloader.model_dir
+                _free_disk_bytes, free_root
             )
             # An unfinished download resumes with Retry, not as an update.
             if _hf_downloader.has_unfinished_download(repo_id):

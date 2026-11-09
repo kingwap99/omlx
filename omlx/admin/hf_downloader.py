@@ -1708,8 +1708,10 @@ class HFDownloader(_QueuePersistenceMixin):
         model_dir: str,
         on_complete: Optional[Callable] = None,
         tasks_file: str | Path | None = None,
+        model_dirs: list[str] | None = None,
     ):
         self._model_dir = Path(model_dir)
+        self._configured_dirs = [Path(d) for d in (model_dirs or [])]
         self._tasks: dict[str, DownloadTask] = {}
         self._active_tasks: dict[str, asyncio.Task] = {}
         self._progress_tasks: dict[str, asyncio.Task] = {}
@@ -1728,15 +1730,25 @@ class HFDownloader(_QueuePersistenceMixin):
         """Update the model directory path."""
         self._model_dir = Path(new_dir)
 
+    def update_model_dirs(self, model_dirs: list[str]) -> None:
+        """Track every configured model directory for discovery lookups."""
+        self._configured_dirs = [Path(d) for d in model_dirs]
+
     def destination_dirs(self) -> list[Path]:
-        """Roots downloads have used: the primary dir plus task snapshots."""
-        roots = [self._model_dir]
+        """Roots that may hold downloads: configured dirs plus task snapshots."""
+        roots: list[Path] = []
+
+        def add(path: Path) -> None:
+            if not any(path == root or path.is_relative_to(root) for root in roots):
+                roots.append(path)
+
+        add(self._model_dir)
+        for configured in self._configured_dirs:
+            add(configured)
         for task in self._tasks.values():
             if not task.dest_dir:
                 continue
-            path = Path(task.dest_dir)
-            if not any(path == root or path.is_relative_to(root) for root in roots):
-                roots.append(path)
+            add(Path(task.dest_dir))
         return roots
 
     def repo_dir(self, repo_id: str, dest_dir: str = "") -> Path:
@@ -1852,6 +1864,13 @@ class HFDownloader(_QueuePersistenceMixin):
             if not dest_path.is_absolute():
                 raise ValueError(f"Destination directory must be absolute: {dest_dir}")
             dest_dir = str(dest_path.resolve())
+        else:
+            # Updating a repo that already lives in another configured
+            # directory must resume there; the primary would get a copy.
+            for root in self.destination_dirs():
+                if root != self._model_dir and _has_download_records(root / repo_id):
+                    dest_dir = str(root)
+                    break
 
         # One download per repo folder; Hub resolves repo IDs case-insensitively.
         for task in self._tasks.values():

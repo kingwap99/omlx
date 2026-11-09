@@ -9047,6 +9047,7 @@
                 };
                 try {
                     const params = new URLSearchParams({ repo_id: repoId });
+                    if (this.hfDestDir) params.set('dest_dir', this.hfDestDir);
                     const headers = this.hfToken ? { 'X-HF-Token': this.hfToken } : {};
                     const response = await fetch(`/admin/api/hf/model-info?${params}`, { headers, signal: controller.signal });
                     if (response.ok) {

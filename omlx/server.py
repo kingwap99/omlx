@@ -2756,6 +2756,7 @@ def init_server(
 
     _server_state.hf_downloader = HFDownloader(
         model_dir=dir_list[0],  # Downloads go to primary directory
+        model_dirs=[str(d) for d in dir_list],
         on_complete=_refresh_models_after_download,
         tasks_file=tasks_base / "hf_download_tasks.json",
     )
