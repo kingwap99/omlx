@@ -8180,7 +8180,18 @@ def _resolve_download_dest(dest_dir: str) -> str:
     global_settings = _get_global_settings()
     if global_settings is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
-    requested = Path(dest_dir.strip()).expanduser().resolve()
+    from ..utils.path_probe import probe_dir
+
+    raw = Path(dest_dir.strip()).expanduser()
+    # A stale mount would block the event loop on resolve()/is_dir(); report
+    # the destination as unavailable instead.
+    available, reason = probe_dir(raw)
+    if not available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Download destination is unavailable: {raw} ({reason})",
+        )
+    requested = raw.resolve()
     allowed = global_settings.model.get_model_dirs(global_settings.base_path)
     if requested not in allowed:
         raise HTTPException(
@@ -8349,7 +8360,10 @@ async def list_model_dirs(is_admin: bool = Depends(require_admin)):
     dirs = global_settings.model.get_model_dirs(global_settings.base_path)
     out = []
     for index, model_dir in enumerate(dirs):
-        exists = await asyncio.to_thread(model_dir.exists)
+        # Never block the admin UI on a stale mount: probe with a deadline.
+        from ..utils.path_probe import probe_dir
+
+        exists, unavailable_reason = await asyncio.to_thread(probe_dir, model_dir)
         free = (
             await asyncio.to_thread(_free_disk_bytes, model_dir) if exists else 0
         )
@@ -8359,6 +8373,7 @@ async def list_model_dirs(is_admin: bool = Depends(require_admin)):
                 "index": index,
                 "free_bytes": free,
                 "exists": exists,
+                "unavailable_reason": unavailable_reason,
             }
         )
     return {"dirs": out}
@@ -8573,9 +8588,26 @@ async def list_hf_models(is_admin: bool = Depends(require_admin)):
     # (folder, row name, source type) of folders of GGUF models.
     gguf_folders: list[tuple[Path, str, str]] = []
     for model_dir in model_dirs:
-        if not model_dir.exists():
+        # A stale mount must not hang the whole listing: probe with a deadline
+        # and skip the directory instead.
+        from ..utils.path_probe import probe_dir
+
+        available, unavailable_reason = probe_dir(model_dir)
+        if not available:
+            logger.info(
+                "Skipping unavailable model directory %s (%s)",
+                model_dir,
+                unavailable_reason,
+            )
             continue
-        for subdir in sorted(model_dir.iterdir()):
+        try:
+            entries = sorted(model_dir.iterdir())
+        except OSError as exc:
+            logger.warning(
+                "Could not list model directory %s: %s", model_dir, exc
+            )
+            continue
+        for subdir in entries:
             if not subdir.is_dir() or subdir.name.startswith("."):
                 continue
 

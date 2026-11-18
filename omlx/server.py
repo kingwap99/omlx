@@ -729,6 +729,65 @@ async def lifespan(app: FastAPI):
 
         ttl_task = asyncio.create_task(_ttl_check_loop())
 
+    # Watch model directories that were offline at startup (a NAS mount, an
+    # unplugged drive) and rescan when one comes back, so its models appear
+    # without restarting the server.
+    model_dir_task = None
+    if _server_state.engine_pool is not None:
+
+        async def _model_dir_watchdog() -> None:
+            from .utils.path_probe import probe_dir
+
+            last_state: dict[str, bool] = {}
+            await asyncio.sleep(10)
+            while True:
+                settings = _server_state.global_settings
+                pool = _server_state.engine_pool
+                if settings is not None and pool is not None:
+                    try:
+                        returned: list[str] = []
+                        for directory in settings.model.get_model_dirs(
+                            settings.base_path
+                        ):
+                            available, reason = await asyncio.to_thread(
+                                probe_dir, directory
+                            )
+                            key = str(directory)
+                            was_available = last_state.get(key)
+                            last_state[key] = available
+                            if was_available is False and available:
+                                returned.append(key)
+                            elif was_available is True and not available:
+                                logger.warning(
+                                    "Model directory went offline: %s (%s)",
+                                    key,
+                                    reason,
+                                )
+                        if returned:
+                            logger.info(
+                                "Model directory back online: %s; rescanning",
+                                ", ".join(returned),
+                            )
+                            dir_list = [
+                                str(d)
+                                for d in settings.get_effective_model_dirs()
+                            ]
+                            pinned = (
+                                _server_state.settings_manager.get_pinned_model_ids()
+                                if _server_state.settings_manager is not None
+                                else []
+                            )
+                            await asyncio.to_thread(
+                                pool.discover_models, dir_list, pinned
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # pragma: no cover - best effort
+                        logger.debug("Model directory watchdog error: %s", exc)
+                await asyncio.sleep(60)
+
+        model_dir_task = asyncio.create_task(_model_dir_watchdog())
+
     # Initialize MCP if config provided
     # Priority: env var > settings.json
     mcp_config = os.environ.get("OMLX_MCP_CONFIG")
@@ -780,6 +839,12 @@ async def lifespan(app: FastAPI):
         ttl_task.cancel()
         try:
             await ttl_task
+        except asyncio.CancelledError:
+            pass
+    if model_dir_task is not None:
+        model_dir_task.cancel()
+        try:
+            await model_dir_task
         except asyncio.CancelledError:
             pass
     if _server_state.process_memory_enforcer is not None:

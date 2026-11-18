@@ -1564,9 +1564,18 @@ class GlobalSettings:
         seen: set[Path] = set()
 
         def add(path: Path, *, require_exists: bool = False) -> None:
-            resolved = path.expanduser().resolve()
-            if require_exists and not resolved.exists():
+            from .utils.path_probe import probe_dir
+
+            available, _ = probe_dir(path)
+            if require_exists and not available:
                 return
+            expanded = path.expanduser()
+            if available:
+                resolved = expanded.resolve()
+            else:
+                # resolve() stats every component; skip it for a dir that is
+                # offline so a dead mount cannot block the caller.
+                resolved = Path(os.path.abspath(expanded))
             if resolved in seen:
                 return
             seen.add(resolved)
@@ -1657,7 +1666,7 @@ class GlobalSettings:
 
     def ensure_directories(self) -> None:
         """Create necessary directories if they don't exist."""
-        from .model_discovery import model_directory_access_error
+        from .utils.path_probe import probe_dir
 
         # Required directories - fatal if creation fails
         required = [
@@ -1694,7 +1703,10 @@ class GlobalSettings:
         # settings so discovery finds them again after reconnection.
         model_dirs = self.model.get_model_dirs(self.base_path)
         for directory in model_dirs:
-            if not directory.exists():
+            # A hung network mount must never take startup down (or block it for
+            # the kernel's timeout): probe with a deadline and skip instead.
+            available, error = probe_dir(directory, refresh=True)
+            if not available and error == "does not exist":
                 try:
                     directory.mkdir(parents=True, exist_ok=True)
                     logger.debug(f"Created directory: {directory}")
@@ -1703,10 +1715,11 @@ class GlobalSettings:
                         f"Model directory unavailable, skipping: {directory} ({e})"
                     )
                     continue
-
-            access_error = model_directory_access_error(directory)
-            if access_error is not None:
-                logger.warning(f"Model directory unavailable, skipping: {access_error}")
+                available, error = probe_dir(directory, refresh=True)
+            if not available:
+                logger.warning(
+                    f"Model directory unavailable, skipping: {directory} ({error})"
+                )
 
         # Store resolved paths so they match what the admin API reports.
         self.model.model_dirs = [str(d) for d in model_dirs]
