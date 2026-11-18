@@ -1,6 +1,6 @@
 ## ⚡ 本 Fork 的改动（相对于上游 [jundot/omlx](https://github.com/jundot/omlx)）
 
-> 分支：`feat/download-dest-and-model-move`（基于上游 `2165e75`）。
+> 分支：`feat/download-dest-and-model-move`（基于上游 `v0.8.0`）。
 > 动机：主机内置 SSD 只有 1TB，需要把模型下载到指定的 `model_dirs`、并在多个
 > model dirs（含外接盘）之间移动模型，同时保留多版本测试用模型。
 

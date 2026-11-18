@@ -1,6 +1,6 @@
 ## ⚡ 이 포크의 변경 사항 (업스트림 [jundot/omlx](https://github.com/jundot/omlx) 대비)
 
-> 브랜치: `feat/download-dest-and-model-move` (업스트림 `2165e75` 기반).
+> 브랜치: `feat/download-dest-and-model-move` (업스트림 `v0.8.0` 기반).
 > 동기: 호스트 내장 SSD가 1TB뿐이라 모델을 지정된 `model_dirs`로 다운로드하고,
 > 여러 모델 디렉터리(외장 드라이브 포함) 사이에서 이동하면서 여러 버전을
 > 테스트용으로 유지해야 합니다.
