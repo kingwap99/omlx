@@ -1955,6 +1955,11 @@ class TestUnsupportedModels:
         (tmp_path / "config.json").write_text(json.dumps(config))
         assert _is_unsupported_model(tmp_path) is False
 
+    def test_florence2_is_unsupported(self, tmp_path):
+        config = {"model_type": "florence2", "vision_config": {"model_type": "davit"}}
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        assert _is_unsupported_model(tmp_path) is True
+
     def test_audio_models_included_in_discovery(self, tmp_path):
         """Audio models are now discovered (not skipped) with correct types."""
         # Create a normal LLM model
@@ -2074,6 +2079,23 @@ class TestHfCacheDiscovery:
         result = _resolve_hf_cache_entry(entry)
         assert result is not None
         assert result.snapshot_path == snapshot
+
+    def test_resolve_corrupt_refs_main_falls_back_with_warning(self, tmp_path, caplog):
+        """Non-UTF-8 byte in refs/main falls back to snapshot with a warning.
+
+        Minefield 131: read_text() on a refs file holding a stray byte raised
+        UnicodeDecodeError out of discovery; resolution must instead fall back
+        and warn, naming the ref file.
+        """
+        entry, snapshot = self._make_hf_cache_entry(tmp_path, "mlx-community", "Qwen3-8B")
+        (entry / "refs" / "main").write_bytes(b"\xff")
+
+        with caplog.at_level(logging.WARNING):
+            result = _resolve_hf_cache_entry(entry)
+
+        assert result is not None
+        assert result.snapshot_path == snapshot
+        assert "refs/main" in caplog.text
 
     def test_discover_hf_cache_model(self, tmp_path):
         """HF cache entries are discovered as models."""
