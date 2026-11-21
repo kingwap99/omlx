@@ -81,7 +81,8 @@ plist（备份后修改）。注意：之后升级 oMLX.app 时新的 DMG 不会
   <a href="README.md">English</a> ·
   <b>中文</b> ·
   <a href="README.ko.md">한국어</a> ·
-  <a href="README.ja.md">日本語</a>
+  <a href="README.ja.md">日本語</a> ·
+  <a href="README.it.md">Italiano</a>
 </p>
 
 ---

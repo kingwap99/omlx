@@ -66,6 +66,7 @@ from ..exceptions import (
     ModelUnavailableError,
 )
 from ..logging_config import console_log_level, is_console_handler
+from ..lora_adapters import adapter_info, compatibility_problem, is_adapter_dir
 from ..model_discovery import (
     REASONING_EFFORT_LEVELS,
     _is_hf_cache_mlx_compatible,
@@ -82,6 +83,8 @@ from ..model_settings import (
     ModelSettings,
     ane_prefill_backend,
     ane_prefill_fraction,
+    lora_adapter_conflict,
+    resolve_lora_conflicts,
     resolve_qwen35_prefill_conflicts,
     resolve_vlm_mtp_conflicts,
     validate_ane_prefill,
@@ -94,6 +97,7 @@ from ..model_settings import (
 from ..oqh.format import is_oqh_checkpoint
 from ..patches.deepseek_v4.chat_template_v4 import REASONING_EFFORT_PROMPTS
 from ..patches.deepseek_v41.encoding import REASONING_EFFORT_MAPPINGS
+from ..patches.inkling2 import INKLING2_MODEL_TYPES
 from ..patches.k2_horizon import REASONING_EFFORTS
 from ..patches.moe_offload_compat import moe_offload_compatibility
 from ..prefill_helper.adapters import adapter_for_model as stage_adapter_for
@@ -365,8 +369,16 @@ def _draft_path_is_unusable(value: str) -> bool:
 _DRAFT_FEATURES = ("dflash", "specprefill", "vlm_mtp")
 
 
+def _model_config(entry) -> dict:
+    try:
+        config = json.loads((Path(entry.model_path) / "config.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
 def _draft_usability_problem(
-    settings: dict[str, Any], touched: set[str]
+    settings: dict[str, Any], touched: set[str], entry=None
 ) -> str | None:
     """Return why a draft in ``settings`` cannot be used, or None to proceed.
 
@@ -385,6 +397,17 @@ def _draft_usability_problem(
         draft = settings.get(draft_key)
         if settings.get(enabled_key) and draft and _draft_path_is_unusable(draft):
             return f"Draft model has no config.json: {draft}"
+    # The adapter path is its own toggle, so the same rule checks it when named.
+    adapter = settings.get("lora_adapter")
+    if adapter and "lora_adapter" in touched:
+        info = adapter_info(adapter)
+        if info is None:
+            return f"No LoRA adapter (adapter_config.json) at {adapter}"
+        problem = info.problem
+        if problem is None and entry is not None:
+            problem = compatibility_problem(info, _model_config(entry))
+        if problem:
+            return f"LoRA adapter {adapter}: {problem}"
     return None
 
 
@@ -398,7 +421,9 @@ def _profile_draft_problem(mgr, model_id: str, settings: dict, exposed) -> str |
     if exposed:
         base = mgr.get_settings(model_id).to_dict()
         merged = {**base, **filter_profile_fields(settings)}
-    return _draft_usability_problem(merged, set(settings))
+    pool = _get_engine_pool()
+    entry = pool.get_entry(model_id) if pool is not None else None
+    return _draft_usability_problem(merged, set(settings), entry)
 
 
 class ModelSettingsRequest(BaseModel):
@@ -492,6 +517,7 @@ class ModelSettingsRequest(BaseModel):
     vlm_mtp_enabled: bool | None = None
     vlm_mtp_draft_model: str | None = None
     vlm_mtp_draft_block_size: int | None = None
+    lora_adapter: str | None = None
     reasoning_parser: str | None = None
     guided_grammar_enabled: bool | None = None
     guided_grammar: str | None = None
@@ -551,7 +577,10 @@ class ModelSettingsRequest(BaseModel):
         return value
 
     @field_validator(
-        "specprefill_draft_model", "dflash_draft_model", "vlm_mtp_draft_model"
+        "specprefill_draft_model",
+        "dflash_draft_model",
+        "vlm_mtp_draft_model",
+        "lora_adapter",
     )
     @classmethod
     def validate_draft_path(cls, value: str | None) -> str | None:
@@ -1137,6 +1166,7 @@ def _sanitize_diffusion_settings_dict(settings: dict) -> None:
         "dflash_verify_mode",
         "vlm_mtp_draft_model",
         "vlm_mtp_draft_block_size",
+        "lora_adapter",
     )
     for key in unsupported_none_fields:
         settings[key] = None
@@ -1303,7 +1333,7 @@ def _mtp_compat_for_model(
         if bundled_dspark_path(model_path) is not None:
             return True, ""
         return False, "MiniMax checkpoint has no bundled dspark/ draft"
-    if model_type == "inkling2":
+    if model_type in INKLING2_MODEL_TYPES:
         from ..patches.inkling2.dspark import bundled_inkling2_dspark_path
 
         if bundled_inkling2_dspark_path(model_path) is not None:
@@ -2783,6 +2813,51 @@ async def list_models(is_admin: bool = Depends(require_admin)):
     return {"models": models}
 
 
+@router.get("/api/models/{model_id}/lora-adapters")
+async def list_lora_adapters(model_id: str, is_admin: bool = Depends(require_admin)):
+    """LoRA adapters in the model folders, each with why it does not fit this model."""
+    entry = _require_model(model_id)
+    config = _model_config(entry)
+    engine_problem = (
+        None
+        if entry.engine_type in ("batched", "vlm")
+        else "LoRA adapters apply only to language and VLM models"
+    )
+
+    manager = _get_settings_manager()
+    selected = manager.get_settings(model_id).lora_adapter if manager else None
+
+    def _row(adapter_id: str, path: str) -> dict[str, Any] | None:
+        info = adapter_info(path)
+        if info is None:
+            return None
+        row = info.to_dict()
+        row["id"] = adapter_id
+        row["size_formatted"] = format_size(info.size)
+        row["problem"] = engine_problem or compatibility_problem(info, config)
+        return row
+
+    def _rows() -> list[dict[str, Any]]:
+        rows = [
+            row
+            for adapter_id, path in sorted(_get_engine_pool().lora_adapters().items())
+            if (row := _row(adapter_id, path)) is not None
+        ]
+        # The saved adapter may live elsewhere or be gone; the picker shows why.
+        if selected and not any(row["path"] == selected for row in rows):
+            row = _row(Path(selected).name, selected) or {
+                "id": Path(selected).name,
+                "path": selected,
+                "rank": 0,
+                "targets": [],
+                "problem": "the adapter folder was not found",
+            }
+            rows.append(row)
+        return rows
+
+    return {"adapters": await asyncio.to_thread(_rows)}
+
+
 @router.post("/api/models/{model_id}/unload")
 async def unload_model(
     model_id: str,
@@ -3559,6 +3634,13 @@ async def update_model_settings(
         current_settings.vlm_mtp_draft_model = request.vlm_mtp_draft_model or None
     if "vlm_mtp_draft_block_size" in sent:
         current_settings.vlm_mtp_draft_block_size = request.vlm_mtp_draft_block_size
+    touched = set(sent)
+    if "lora_adapter" in sent:
+        new_adapter = None if is_diffusion_model else request.lora_adapter or None
+        if new_adapter == current_settings.lora_adapter:
+            # Whole-payload saves resend it; only a change is checked (#4217).
+            touched.discard("lora_adapter")
+        current_settings.lora_adapter = new_adapter
 
     # Draft usability is only enforced for a feature that is on: the admin UI
     # re-sends the whole payload, so a draft directory deleted from disk (or a
@@ -3566,7 +3648,9 @@ async def update_model_settings(
     # enable the feature. The parked value is kept verbatim, exactly as #4217
     # settled for DFlash. The profile routes apply the same rule through
     # _draft_usability_problem.
-    draft_problem = _draft_usability_problem(current_settings.to_dict(), sent)
+    draft_problem = _draft_usability_problem(
+        current_settings.to_dict(), touched, entry
+    )
     if draft_problem:
         raise HTTPException(status_code=422, detail=draft_problem)
 
@@ -3845,6 +3929,18 @@ def _raise_if_alias_conflicts_exposed_profiles(
 def _validate_model_settings(entry, settings):
     from ..model_settings import validate_moe_expert_offload
 
+    if settings.get("lora_adapter"):
+        if getattr(entry, "engine_type", None) not in ("batched", "vlm"):
+            raise HTTPException(
+                status_code=400,
+                detail="A LoRA adapter applies only to language and VLM models.",
+            )
+        conflict = lora_adapter_conflict(settings)
+        if conflict:
+            raise HTTPException(
+                status_code=400,
+                detail=f"A LoRA adapter cannot be combined with {conflict}.",
+            )
     try:
         validate_moe_expert_offload(
             settings, model_type=getattr(entry, "config_model_type", None)
@@ -4067,7 +4163,7 @@ async def apply_model_profile(
         if is_diffusion_model:
             _sanitize_diffusion_settings_dict(settings)
         _validate_model_settings(entry, settings)
-        draft_problem = _draft_usability_problem(settings, touched)
+        draft_problem = _draft_usability_problem(settings, touched, entry)
         if draft_problem:
             raise HTTPException(status_code=422, detail=draft_problem)
 
@@ -4315,6 +4411,10 @@ async def _apply_settings_snapshot(
     _note_conflict("vlm_mtp", conflicts, skipped)
     candidate, conflicts = resolve_qwen35_prefill_conflicts(candidate)
     _note_conflict("a8_prefill", conflicts, skipped)
+    candidate, conflicts = resolve_lora_conflicts(candidate)
+    for name in conflicts:
+        feature = name.removesuffix("_enabled").removesuffix("_node_id")
+        _note_conflict(feature, ["lora_adapter"], skipped)
     try:
         ModelSettings.from_dict(candidate)
         _validate_model_settings(entry, candidate)
@@ -8583,6 +8683,13 @@ async def list_hf_models(is_admin: bool = Depends(require_admin)):
             }
         )
 
+    def _add_adapter(model_path: Path, model_name: str, **kwargs) -> None:
+        # Listed so it can be deleted; it is applied from a model's settings.
+        count = len(models)
+        _add_model(model_path, model_name, **kwargs)
+        if len(models) > count:
+            models[-1]["model_format"] = "lora"
+
     models = []
     seen_names: set[str] = set()
     # (folder, row name, source type) of folders of GGUF models.
@@ -8613,6 +8720,8 @@ async def list_hf_models(is_admin: bool = Depends(require_admin)):
 
             if gguf.is_gguf_folder(subdir):
                 gguf_folders.append((subdir, subdir.name, "local"))
+            elif is_adapter_dir(subdir):
+                _add_adapter(subdir, subdir.name)
             elif (subdir / "config.json").exists():
                 # Level 1: direct model folder
                 _add_model(subdir, subdir.name)
@@ -8623,6 +8732,13 @@ async def list_hf_models(is_admin: bool = Depends(require_admin)):
                     if gguf.is_gguf_folder(hf_resolved.snapshot_path):
                         folder, name = hf_resolved.snapshot_path, hf_resolved.model_id
                         gguf_folders.append((folder, name, "hf_cache"))
+                    elif is_adapter_dir(hf_resolved.snapshot_path):
+                        _add_adapter(
+                            hf_resolved.snapshot_path,
+                            hf_resolved.model_id,
+                            source_repo_id=hf_resolved.source_repo_id,
+                            source_type="hf_cache",
+                        )
                     elif _is_hf_cache_mlx_compatible(
                         hf_resolved.snapshot_path, hf_resolved.source_repo_id
                     ):
@@ -8640,6 +8756,10 @@ async def list_hf_models(is_admin: bool = Depends(require_admin)):
                         continue
                     if gguf.is_gguf_folder(child):
                         gguf_folders.append((child, child.name, "local"))
+                    elif is_adapter_dir(child):
+                        _add_adapter(
+                            child, child.name, repo_id=f"{subdir.name}/{child.name}"
+                        )
                     elif (child / "config.json").exists():
                         _add_model(
                             child, child.name, repo_id=f"{subdir.name}/{child.name}"
@@ -8705,8 +8825,12 @@ async def list_hf_models(is_admin: bool = Depends(require_admin)):
 
 
 def _is_listed_model_folder(path: Path) -> bool:
-    """A folder /api/hf/models lists whole: a checkpoint or a GGUF folder."""
-    return (path / "config.json").exists() or gguf.is_gguf_folder(path)
+    """A folder /api/hf/models lists whole: a checkpoint, GGUF or LoRA adapter."""
+    return (
+        (path / "config.json").exists()
+        or gguf.is_gguf_folder(path)
+        or is_adapter_dir(path)
+    )
 
 
 def _find_model_folder(
@@ -8739,6 +8863,7 @@ def _find_model_folder(
                         hf_resolved.snapshot_path, hf_resolved.source_repo_id
                     )
                     or gguf.is_gguf_folder(hf_resolved.snapshot_path)
+                    or is_adapter_dir(hf_resolved.snapshot_path)
                 ):
                     return subdir, model_dir, "hf_cache"
                 continue
@@ -9705,6 +9830,12 @@ async def start_ane_tuning(
         raise HTTPException(
             status_code=400,
             detail=f"Model {tuning_request.model_id} is not a supported language model",
+        )
+    manager = _get_settings_manager()
+    if manager is not None and manager.get_settings(tuning_request.model_id).lora_adapter:
+        raise HTTPException(
+            status_code=400,
+            detail="ANE prefill cannot run with a LoRA adapter; remove the adapter to tune.",
         )
 
     tuning_request.backend = "k2" if entry.config_model_type == "k2_horizon" else "qwen"

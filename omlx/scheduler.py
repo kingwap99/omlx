@@ -57,7 +57,11 @@ from .cache.deepseek_v41_delta import is_delta as is_deepseek_v41_delta
 from .cache.observability import BoundarySnapshotDiagnostics, CacheRateTracker
 from .cache.paged_cache import PagedCacheManager
 from .cache.pooling_delta import compact_pooling_cache_snapshot
-from .cache.prefix_cache import BlockAwarePrefixCache, cachelist_pm_member_plan
+from .cache.prefix_cache import (
+    _RESTORE_POOL_FLUSH_BYTES,
+    BlockAwarePrefixCache,
+    cachelist_pm_member_plan,
+)
 from .decode_activity import get_decode_activity
 from .exceptions import (
     InvalidRequestError,
@@ -1143,7 +1147,33 @@ def _patched_merge_caches(caches):
                     f"{type(layer_cache)} does not yet support batching with history"
                 )
         return merged
-    return _original_merge_caches(caches)
+    # Merge layer by layer and drop each donor layer once merged; the stock
+    # loop keeps every request's cache alive until the last layer.
+    merged = []
+    # Indexed: zip/enumerate would keep the last donor tuple alive.
+    for i in range(len(caches[0])):
+        if not hasattr(caches[0][i], "merge"):
+            raise ValueError(
+                f"{type(caches[0][i])} does not yet support batching with history"
+            )
+        layer = caches[0][i].merge([c[i] for c in caches])
+        for c in caches:
+            if isinstance(c, list):
+                c[i] = None
+        _eval_cache_layer(layer)
+        merged.append(layer)
+    return merged
+
+
+def _eval_cache_layer(layer: Any) -> None:
+    """Materialize a merged or joined layer and flush the pool of its donors."""
+    try:
+        state = layer.state
+    except (AttributeError, NotImplementedError):
+        state = None
+    if state is not None:
+        mx.eval(state)
+    BlockAwarePrefixCache._flush_restore_pool_if_over(_RESTORE_POOL_FLUSH_BYTES)
 
 
 def _patched_extend_cache(cache_a, cache_b):
@@ -1154,17 +1184,17 @@ def _patched_extend_cache(cache_a, cache_b):
     # Materialize one layer before joining the next; otherwise all old,
     # padded and joined banks coexist in the lazy graph. The donor is consumed.
     extended = []
-    for i, (ca, cb) in enumerate(zip(cache_a, cache_b)):
+    # Indexed: zip/enumerate would keep the last donor tuple alive.
+    for i in range(min(len(cache_a), len(cache_b))):
+        ca, cb = cache_a[i], cache_b[i]
         layer = _extend_cache_layer(ca, cb)
         if isinstance(cache_b, list):
             cache_b[i] = None
+        # A singleton converted to a new batch layer is a donor too.
+        if isinstance(cache_a, list) and layer is not ca:
+            cache_a[i] = None
         del ca, cb
-        try:
-            state = layer.state
-        except (AttributeError, NotImplementedError):
-            state = None
-        if state is not None:
-            mx.eval(state)
+        _eval_cache_layer(layer)
         extended.append(layer)
     return extended
 
@@ -1901,6 +1931,9 @@ def _expected_chunk_len(step_size: int, remaining: int, kv_total: int, boundary_
         if delta > 0:
             next_n = min(next_n, delta)
     return max(1, next_n)
+
+
+_HY_V4_PREFILL_FLOOR = 4096
 
 
 def _glm5_next_prefill_floor() -> int:
@@ -3020,10 +3053,14 @@ class Scheduler:
     def _prepare_system_prefix_store(
         self, request: "Request", full_cache: list[Any]
     ) -> tuple[list[int], list[Any], Any, Any] | None:
-        """Build the shared system-prefix tail payload on the inference thread."""
-        system_end = getattr(request, "system_prefix_end", 0) or 0
+        """Build the shared-tail payload (system prefix or branch point)."""
         snapshots = self._boundary_cache_snapshots.get(request.request_id) or {}
-        if system_end <= 0 or system_end not in snapshots:
+        ends = (
+            getattr(request, "system_prefix_end", 0) or 0,
+            getattr(request, "junction_end", 0) or 0,
+        )
+        system_end = next((end for end in ends if end > 0 and end in snapshots), 0)
+        if system_end <= 0:
             return None
         try:
             override = self._get_boundary_store_override(
@@ -3033,7 +3070,7 @@ class Scheduler:
             )
         except Exception as e:
             logger.debug(
-                "System prefix snapshot unavailable for %s: %s", request.request_id, e
+                "Shared tail snapshot unavailable for %s: %s", request.request_id, e
             )
             return None
         if override is None:
@@ -3057,7 +3094,7 @@ class Scheduler:
         extra_key_ranges: list[tuple[int, tuple[Any, ...]]] | None,
         hot_cache_write_back: bool,
     ) -> None:
-        """Store the shared system-prefix tail beside the request's own chain."""
+        """Store the shared tail (system prefix or branch point) by the request."""
         tokens, cache, model_cache_config, provider = system_store
         store_id = f"{request_id}#system"
         block_size = self.config.paged_cache_block_size
@@ -3090,7 +3127,7 @@ class Scheduler:
                 _store_shared_tail=True,
             )
         except Exception as e:
-            logger.debug("System prefix store failed for %s: %s", request_id, e)
+            logger.debug("Shared tail store failed for %s: %s", request_id, e)
         finally:
             table = (
                 self.paged_cache_manager.detach_block_table(store_id)
@@ -3409,6 +3446,16 @@ class Scheduler:
                     return 0
             if model_type.startswith("glm5_next"):
                 return _glm5_next_prefill_floor()
+            if model_type.startswith("hy_v4"):
+                from .settings import get_system_memory
+
+                # Top-16-of-512 (Hy4-flash) and top-8-of-256 (Hy4) routing
+                # leave ~64 rows per expert at a 2048-token chunk. Attention per
+                # query does not grow with the chunk: sparse layers read 2048
+                # slots and sliding ones 512.
+                if get_system_memory() >= 64 * 1024**3:
+                    return _HY_V4_PREFILL_FLOOR
+                return 0
             if model_type == "deepseek_v41":
                 # Top-6-of-384 routing leaves ~32 rows per expert at 2048 tokens;
                 # 8192 fills the gather_qmm tiles better.
@@ -6186,6 +6233,34 @@ class Scheduler:
         if track:
             tracker.record_flat_reclaim(max(0, pooled))
 
+    # Matches ProcessMemoryEnforcer._POOL_RECLAIM_FLOOR.
+    _PRE_STORE_POOL_CLEAR_FLOOR_BYTES = 2 * 1024**3
+
+    def _clear_pool_before_store(self) -> None:
+        """Clear a large pool under pressure before a cache store starts.
+
+        The store worker holds _mx_buffer_access_lock for the whole store, so
+        any pool clear requested during the store waits until it ends.
+        """
+        if not self._prefill_memory_guard or self._memory_limit_bytes <= 0:
+            return
+        pooled = int(mx.get_cache_memory())
+        if pooled <= self._PRE_STORE_POOL_CLEAR_FLOOR_BYTES:
+            return
+        if self._current_usage_bytes() < self._memory_limit_bytes:
+            return
+        # Do not wait behind a store that already holds the lock.
+        if not _mx_buffer_access_lock.acquire(blocking=False):
+            return
+        try:
+            Scheduler._clear_cache(self)
+        finally:
+            _mx_buffer_access_lock.release()
+        logger.info(
+            "Cleared %.2fGB of pooled Metal buffers before cache store",
+            pooled / 1024**3,
+        )
+
     # A chunk always gets this much room above live MLX memory, so a tight
     # headroom makes MLX run the chunk slower instead of one op at a time.
     _CHUNK_BACKPRESSURE_FLOOR_BYTES = 512 * 1024**2
@@ -6465,11 +6540,11 @@ class Scheduler:
             rid != request_id for rid in self.running
         ):
             return 0
+        self._moe_offload_slots_released = True
         released = self.moe_offload_release(
             need_bytes, lambda: Scheduler._clear_cache(self)
         )
         if released:
-            self._moe_offload_slots_released = True
             self._reclaim_prefill_headroom()
         return released
 
@@ -8517,6 +8592,43 @@ class Scheduler:
         if 0 < n < limit and n % block_size:
             request.system_prefix_end = n
 
+    # Fewest re-prefill tokens a branch point must save to get a shared tail:
+    # below it the re-prefill costs less than the snapshot and its two SSD files.
+    _JUNCTION_MIN_TOKENS = 512
+
+    def _resolve_junction_end(self, request: "Request") -> None:
+        """Plan a shared tail where this prompt leaves a recently stored sequence.
+
+        Hybrid models resume only at a block boundary or a stored tail, so later
+        prompts that branch at the same place resume at this one.
+        """
+        block_size = self.config.paged_cache_block_size
+        lookup = getattr(self, "_last_prefix_cache_lookup", None)
+        if (
+            block_size <= 0
+            or not lookup
+            or lookup.get("request_id") != request.request_id
+            or not self._detect_boundary_snapshot_need()
+        ):
+            return
+        branch = lookup.get("common_prefix_tokens", 0)
+        prompt_len = len(request.prompt_token_ids or [])
+        limit = getattr(request, "generation_prompt_start", 0) or prompt_len - 1
+        if (
+            branch - (request.cached_tokens or 0) < self._JUNCTION_MIN_TOKENS
+            or branch % block_size == 0
+            or branch >= limit
+        ):
+            return
+        request.junction_end = branch
+        logger.info(
+            "prefix cache: request %s leaves a stored prompt at token %d "
+            "(reused %d); its prefill stops there to keep a shared tail",
+            request.request_id,
+            branch,
+            request.cached_tokens or 0,
+        )
+
     def _minimum_prefill_prefix(self, request: "Request") -> int:
         prompt_token_ids = getattr(request, "prompt_token_ids", None)
         prefix_hook = getattr(self.model, "minimum_prefill_prefix", None)
@@ -8558,14 +8670,19 @@ class Scheduler:
         n_tokens: int,
         boundary_enabled: bool,
     ) -> int | None:
-        """Return the shared system-prefix stop when this prefill crosses it."""
-        system_end = getattr(request, "system_prefix_end", 0) or 0
+        """Return the shared-tail stop this prefill crosses; the system prefix wins."""
+        if not boundary_enabled:
+            return None
         prefill_end = base_size + n_tokens - 1
-        if not boundary_enabled or not base_size < system_end < prefill_end:
-            return None
-        if system_end < self._minimum_prefill_prefix(request):
-            return None
-        return system_end
+        for end in (
+            getattr(request, "system_prefix_end", 0) or 0,
+            getattr(request, "junction_end", 0) or 0,
+        ):
+            if base_size < end < prefill_end and end >= self._minimum_prefill_prefix(
+                request
+            ):
+                return end
+        return None
 
     def _emit_prefill_tail_snapshot(
         self,
@@ -9728,9 +9845,9 @@ class Scheduler:
         """
         Return boundary-aligned cache payload when final request ends on partial block.
 
-        The shared system-prefix tail is a terminal only with ``system_tail``;
-        it carries no intermediate snapshots because its store reuses the
-        cached full blocks.
+        A shared tail (system prefix or branch point) is a terminal only with
+        ``system_tail``; it carries no intermediate snapshots because its store
+        reuses the cached full blocks.
 
         Returns:
             Tuple of (truncated_tokens, extracted_cache, model_cache_config,
@@ -9779,13 +9896,16 @@ class Scheduler:
         valid_counts = sorted(
             tc for tc in snapshots if 0 < tc <= limit and tc % block_size == 0
         )
-        system_end = getattr(request, "system_prefix_end", 0) or 0
+        shared_ends = {
+            getattr(request, "system_prefix_end", 0) or 0,
+            getattr(request, "junction_end", 0) or 0,
+        }
         tail_counts = [
             tc
             for tc in snapshots
             if 0 < tc <= limit
             and tc % block_size != 0
-            and (tc == system_end) == system_tail
+            and (tc in shared_ends) == system_tail
         ]
         if not valid_counts and not tail_counts:
             miss("no_aligned_snapshots", len(snapshots))
@@ -11385,6 +11505,7 @@ class Scheduler:
         # sequences: one INFO line for large re-prefills (#2333/#2349
         # triage), decoded token context at DEBUG (issue #1003).
         self._log_prefix_divergence(request)
+        self._resolve_junction_end(request)
 
         # SpecPrefill: score remaining tokens with draft model if applicable.
         # Must run AFTER prefix cache check (scoring applies only to uncached suffix).
@@ -14894,6 +15015,7 @@ class Scheduler:
                                     request_id,
                                 )
 
+                            self._clear_pool_before_store()
                             if self._store_cache_executor is not None:
                                 # Hand host memcpy and disk write to the
                                 # background executor after the owner thread
@@ -16376,6 +16498,7 @@ class Scheduler:
         self.model = None
         self.tokenizer = None
         self._logprob_detokenizer = None
+        self._prefill_helper_retry = None  # Its helper holds the language model.
 
         # Release all cache-related references for GC
         if self._boundary_snapshot_store is not None:

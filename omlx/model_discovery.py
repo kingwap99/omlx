@@ -80,6 +80,7 @@ VLM_MODEL_TYPES = {
     "inkling_mm_model",  # config model_type of Inkling Small checkpoints
     # mlx-lm's Inkling 2 module served through the VLM engine adapter.
     "inkling2",
+    "inkling2_loop",
     "muse_glimmer",
     "muse_spark",
     "glm5_next",
@@ -87,8 +88,8 @@ VLM_MODEL_TYPES = {
     "qwen3_omni_moe",
 }
 
-# Text-only model families that are implemented in mlx-vlm rather than
-# mlx-lm. They still use the VLM engine because that path loads mlx-vlm
+# Model families that are implemented in mlx-vlm rather than mlx-lm, mostly
+# text-only ones. They use the VLM engine because that path loads mlx-vlm
 # models and adapts their language model to oMLX's scheduler.
 VLM_NATIVE_TEXT_MODEL_TYPES = {
     "cohere2_moe",
@@ -98,6 +99,9 @@ VLM_NATIVE_TEXT_MODEL_TYPES = {
     # mlx-lm ships its own deepseek_v41 without the oMLX cache and kernels.
     "deepseek_v41",
     "glm5_next",
+    # Hy4 and Hy4-flash: text-only conversions have no mlx-lm module either.
+    "hy_v4_vl",
+    "hy_v4_flash",
     "minimax_m3",
     # The VLM engine's loader also reads the earlier oMLX layout of text-only
     # Muse Spark conversions.
@@ -1264,6 +1268,17 @@ def _is_adapter_dir(path: Path) -> bool:
     return (path / "adapter_config.json").exists()
 
 
+def _register_adapter(adapters: dict[str, str], path: Path, adapter_id: str) -> None:
+    if adapter_id in adapters:
+        logger.warning(
+            f"Duplicate LoRA adapter id '{adapter_id}' at {path}, "
+            f"keeping {adapters[adapter_id]}"
+        )
+        return
+    adapters[adapter_id] = str(path)
+    logger.info(f"Found LoRA adapter: {adapter_id}")
+
+
 def _is_model_dir(path: Path) -> bool:
     """Check if a directory contains a valid model (has config.json)."""
     return (path / "config.json").exists() and not _is_adapter_dir(path)
@@ -2007,7 +2022,9 @@ def _owner_folder(path: Path, model_dirs: list[Path]) -> str | None:
 
 
 def discover_models(
-    model_dir: Path, gguf_root: Path | None = None
+    model_dir: Path,
+    gguf_root: Path | None = None,
+    adapters: dict[str, str] | None = None,
 ) -> dict[str, DiscoveredModel]:
     """
     Scan model directory with two-level discovery.
@@ -2037,10 +2054,14 @@ def discover_models(
     Args:
         model_dir: Path to directory containing model subdirectories
         gguf_root: Where GGUF model folders are generated; None skips GGUFs
+        adapters: Receives LoRA adapter folders as {adapter_id: path}. They are
+            never models: a model's settings apply one on top of its weights.
 
     Returns:
         Dictionary mapping model_id to DiscoveredModel
     """
+    if adapters is None:
+        adapters = {}
     access_error = model_directory_access_error(model_dir)
     if access_error is not None:
         if "not readable" in access_error:
@@ -2057,10 +2078,7 @@ def discover_models(
             continue
 
         if _is_adapter_dir(subdir):
-            logger.info(
-                f"Skipping LoRA adapter: {subdir.name} "
-                "(oMLX does not support LoRA/PEFT adapters)"
-            )
+            _register_adapter(adapters, subdir, subdir.name)
         elif _register_gguf_folder(models, subdir, gguf_root):
             pass
         elif _is_model_dir(subdir):
@@ -2070,7 +2088,11 @@ def discover_models(
             # HF Hub cache entry: models--Org--Name/snapshots/<hash>/
             hf_resolved = _resolve_hf_cache_entry(subdir)
             if hf_resolved is not None:
-                if _register_gguf_folder(
+                if _is_adapter_dir(hf_resolved.snapshot_path):
+                    _register_adapter(
+                        adapters, hf_resolved.snapshot_path, hf_resolved.model_id
+                    )
+                elif _register_gguf_folder(
                     models,
                     hf_resolved.snapshot_path,
                     gguf_root,
@@ -2103,10 +2125,8 @@ def discover_models(
                 ):
                     continue
                 if _is_adapter_dir(child):
-                    logger.info(
-                        f"Skipping LoRA adapter: {child.name} "
-                        "(oMLX does not support LoRA/PEFT adapters)"
-                    )
+                    has_children = True
+                    _register_adapter(adapters, child, child.name)
                 elif _register_gguf_folder(models, child, gguf_root):
                     has_children = True
                 elif _skip_splash_package(child):
@@ -2133,7 +2153,9 @@ def discover_models(
 
 
 def discover_models_from_dirs(
-    model_dirs: list[Path], gguf_root: Path | None = None
+    model_dirs: list[Path],
+    gguf_root: Path | None = None,
+    adapters: dict[str, str] | None = None,
 ) -> dict[str, DiscoveredModel]:
     """
     Scan multiple model directories and merge results.
@@ -2143,6 +2165,7 @@ def discover_models_from_dirs(
 
     Args:
         model_dirs: List of paths to directories containing model subdirectories
+        adapters: Receives LoRA adapter folders, earlier directory first
 
     Returns:
         Dictionary mapping model_id to DiscoveredModel
@@ -2156,7 +2179,7 @@ def discover_models_from_dirs(
             continue
 
         try:
-            discovered = discover_models(model_dir, gguf_root)
+            discovered = discover_models(model_dir, gguf_root, adapters)
         except ValueError as e:
             logger.warning(f"Skipping directory {model_dir}: {e}")
             continue

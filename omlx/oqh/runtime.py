@@ -267,6 +267,8 @@ def _bind_readers(norm, readers) -> None:
     if (
         first is None
         or not isinstance(norm, nn.RMSNorm)
+        # Hy4-flash's experts read a latent projection of the norm output.
+        or norm["weight"].shape[-1] != width
         or width % 256
         or width > 8192
         or first.block != 256
@@ -375,4 +377,25 @@ def install(model: nn.Module) -> int:
             original = getattr(verifier, name)
             if not getattr(original, "_omlx_oqh", False):
                 setattr(verifier, name, wrap(original))
+    return count
+
+
+def release_wrapped(model: nn.Module) -> int:
+    """Give fused MLPs whose projections are not all oQh linears their own forward.
+
+    A wrapper around an oQh projection, such as a LoRA adapter, has no
+    matmul_rotated; the class forward calls each projection, and the norm
+    fusion still hands the rotated input to the wrapped oQh linear.
+    """
+    count = 0
+    names = ("gate_proj", "up_proj", "down_proj")
+    for _, module in model.named_modules():
+        cls = type(module)
+        if not issubclass(cls, (_FusedMLP, _FusedSwitchGLU)):
+            continue
+        if all(isinstance(getattr(module, n, None), OQH_MODULES) for n in names):
+            continue
+        # _rebase built cls as (mixin, original class).
+        module.__class__ = cls.__bases__[1]
+        count += 1
     return count
