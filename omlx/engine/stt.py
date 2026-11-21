@@ -950,8 +950,8 @@ class STTEngine(BaseNonStreamingEngine):
         if module.startswith(_NEMOTRON_TRANSCRIBE_MODULE):
             # Word timing needs the CTC head and its alignment tokenizer.
             return (
-                self._model.ctc_timestamp is not None
-                and self._model._alignment_tokenizer is not None
+                getattr(self._model, "ctc_timestamp", None) is not None
+                and getattr(self._model, "_alignment_tokenizer", None) is not None
             )
         return module.startswith(_VIBEVOICE_ASR_MODULE)
 
