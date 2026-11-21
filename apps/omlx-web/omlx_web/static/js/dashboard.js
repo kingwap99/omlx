@@ -8993,7 +8993,10 @@
                 this.recommendationsLoading = true;
                 this.recommendationsError = '';
                 try {
-                    const response = await fetch('/admin/api/hf/recommendations');
+                    const params = new URLSearchParams();
+                    if (this.hfDestDir) params.set('dest_dir', this.hfDestDir);
+                    const query = params.toString();
+                    const response = await fetch('/admin/api/hf/recommendations' + (query ? '?' + query : ''));
                     if (response.ok) {
                         this.recommendations = await response.json();
                     } else if (response.status === 401) {

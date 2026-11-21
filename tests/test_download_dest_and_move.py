@@ -167,6 +167,38 @@ async def test_update_follows_an_existing_secondary_directory(tmp_path):
     assert downloader.destination_dirs() == [primary, extra]
 
 
+async def test_model_info_reports_the_requested_directory(tmp_path, monkeypatch):
+    """An unreadable destination must not report the primary's free space."""
+    primary = tmp_path / "models"
+    primary.mkdir()
+
+    async def _run(self, task_id, token):
+        pass
+
+    async def _info(**_kwargs):
+        return {}
+
+    monkeypatch.setattr(HFDownloader, "_run_download", _run)
+    monkeypatch.setattr(HFDownloader, "get_model_info", staticmethod(_info))
+    downloader = HFDownloader(model_dir=str(primary))
+
+    seen: dict = {}
+
+    def _free(path):
+        seen["path"] = Path(path)
+        return 1
+
+    monkeypatch.setattr(admin_routes, "_hf_downloader", downloader)
+    monkeypatch.setattr(admin_routes, "_free_disk_bytes", _free)
+
+    dest = tmp_path / "secondary"
+    request = SimpleNamespace(headers={})
+    await admin_routes.get_hf_model_info(
+        request=request, repo_id="owner/model", dest_dir=str(dest)
+    )
+    assert seen["path"] == dest
+
+
 # ---------------------------------------------------------------------------
 # Moving models between directories
 # ---------------------------------------------------------------------------

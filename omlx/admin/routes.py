@@ -8286,6 +8286,11 @@ def _resolve_download_dest(dest_dir: str) -> str:
     # A stale mount would block the event loop on resolve()/is_dir(); report
     # the destination as unavailable instead.
     available, reason = probe_dir(raw)
+    if not available and reason and reason.startswith("timed out"):
+        # A network volume can be slower than the startup-shaped deadline
+        # while still being perfectly writable; give it a second chance
+        # before refusing the download.
+        available, reason = probe_dir(raw, timeout=10.0, refresh=True)
     if not available:
         raise HTTPException(
             status_code=400,
@@ -8443,7 +8448,7 @@ async def get_recommended_models(
 def _free_disk_bytes(path: str | Path) -> int:
     """Free bytes on the volume holding `path` (or its nearest existing parent)."""
     try:
-        check_path = Path(path).expanduser().resolve()
+        check_path = Path(path).expanduser()
         while not check_path.exists() and check_path.parent != check_path:
             check_path = check_path.parent
         return shutil.disk_usage(check_path).free
@@ -8481,9 +8486,14 @@ async def list_model_dirs(is_admin: bool = Depends(require_admin)):
 
 @router.get("/api/hf/recommendations")
 async def get_model_recommendations(
+    dest_dir: str = "",
     is_admin: bool = Depends(require_admin),
 ):
-    """oQ models that fit this Mac, grouped for the downloader's Recommended tab."""
+    """oQ models that fit this Mac, grouped for the downloader's Recommended tab.
+
+    ``dest_dir`` reports the free space of the directory a download would go
+    to, so a model is judged against the disk it will actually land on.
+    """
     if _hf_downloader is None:
         raise HTTPException(status_code=503, detail="Downloader not initialized")
 
@@ -8501,6 +8511,9 @@ async def get_model_recommendations(
         raise HTTPException(status_code=502, detail=str(e)) from e
 
     model_dir = _hf_downloader.model_dir
+    if dest_dir.strip():
+        # Judge the space on the disk the download would land on.
+        model_dir = Path(dest_dir.strip()).expanduser()
     result["disk"] = {
         "model_dir": str(model_dir),
         "free_bytes": await asyncio.to_thread(_free_disk_bytes, model_dir),
@@ -8610,10 +8623,10 @@ async def get_hf_model_info(
         if _hf_downloader is not None:
             free_root = _hf_downloader.model_dir
             if dest_dir.strip():
-                try:
-                    free_root = Path(_resolve_download_dest(dest_dir))
-                except HTTPException:
-                    free_root = _hf_downloader.model_dir
+                # Report the chosen directory, never the primary one: an
+                # temporarily unreadable destination must not make the UI
+                # advertise free space the download cannot use.
+                free_root = Path(dest_dir.strip()).expanduser()
             result["disk_free"] = await asyncio.to_thread(
                 _free_disk_bytes, free_root
             )
