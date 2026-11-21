@@ -1,6 +1,6 @@
 ## ⚡ このフォークでの変更（アップストリーム [jundot/omlx](https://github.com/jundot/omlx) との差分）
 
-> ブランチ：`feat/download-dest-and-model-move`（アップストリーム `v0.8.0` ベース）。
+> ブランチ：`feat/download-dest-and-model-move`（アップストリーム `v0.8.2` ベース）。
 > 動機：ホストの内蔵 SSD は 1TB のため、モデルを指定した `model_dirs` に
 > ダウンロードし、複数のモデルディレクトリ（外付けドライブを含む）間で移動しながら、
 > テスト用に複数のバージョンを保持する必要があります。
