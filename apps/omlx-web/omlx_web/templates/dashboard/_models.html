@@ -2331,6 +2331,7 @@
                                             <div class="flex items-center gap-2">
                                                 <select x-show="modelDirChoices().length > 1" x-cloak x-model="hfDestDir"
                                                         @change="refreshHfDiskFree()"
+                                                        x-effect="$nextTick(() => { $el.value = hfDestDir })"
                                                         class="px-2 py-1.5 text-xs border border-neutral-200 rounded-lg bg-white font-mono max-w-[220px]"
                                                         :title="window.t('models.downloader.dest_dir')">
                                                     <option value="">{{ t('models.downloader.dest_primary') }}</option>
