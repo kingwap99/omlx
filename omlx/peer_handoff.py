@@ -18,9 +18,13 @@ exactly as before when no peer is running.
 Environment:
 
 ``OMLX_PEER_HANDOFF``
+    Set to ``1`` to enable the handoff. Off by default: the probe runs on the
+    request path, and a client retrying a refused load would otherwise re-run
+    the stop command on every attempt.
+
+``OMLX_PEER_STOP``
     Command used to stop the peer service, run through the shell. Defaults to
-    ``darkbloom stop --force --timeout 20 --yes``. Set to an empty string to
-    disable the handoff entirely.
+    ``darkbloom stop --force --timeout 20 --yes``.
 
 ``OMLX_PEER_STATUS``
     Command that exits 0 while the peer still holds memory. Defaults to
