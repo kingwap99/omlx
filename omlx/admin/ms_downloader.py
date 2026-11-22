@@ -720,14 +720,21 @@ class MSDownloader(_QueuePersistenceMixin):
         """Update the model directory path."""
         self._model_dir = Path(new_dir)
 
+    def repo_dir(self, repo_id: str, dest_dir: str = "") -> Path:
+        """Where a repo lives under a download destination root."""
+        root = Path(dest_dir) if dest_dir else self._model_dir
+        return root / repo_id
+
     async def start_download(
-        self, model_id: str, ms_token: str = ""
+        self, model_id: str, ms_token: str = "", dest_dir: str = ""
     ) -> DownloadTask:
         """Start downloading a model from ModelScope.
 
         Args:
             model_id: ModelScope model ID (e.g., "qwen/Qwen2.5-7B-Instruct-MLX").
             ms_token: Optional ModelScope token for private models.
+            dest_dir: Root directory for the download; empty uses the primary
+                model directory. Callers validate it against configured dirs.
 
         Returns:
             The created DownloadTask.
@@ -749,6 +756,11 @@ class MSDownloader(_QueuePersistenceMixin):
                 f"Invalid model ID: '{model_id}'. "
                 "Expected format: 'owner/model' (e.g., 'qwen/Qwen2.5-7B-Instruct-MLX')"
             )
+        if dest_dir:
+            dest_path = Path(dest_dir).expanduser()
+            if not dest_path.is_absolute():
+                raise ValueError(f"Destination directory must be absolute: {dest_dir}")
+            dest_dir = str(dest_path.resolve())
 
         # Check for duplicate active downloads
         for task in self._tasks.values():
@@ -761,7 +773,7 @@ class MSDownloader(_QueuePersistenceMixin):
                 )
 
         task_id = str(uuid.uuid4())
-        task = DownloadTask(task_id=task_id, repo_id=model_id)
+        task = DownloadTask(task_id=task_id, repo_id=model_id, dest_dir=dest_dir)
         task.token = ms_token or ""
         self._tasks[task_id] = task
 
@@ -863,7 +875,9 @@ class MSDownloader(_QueuePersistenceMixin):
         # Start fresh download (snapshot_download resumes from existing files).
         # An empty retry token keeps the stored one. If it raises, the old
         # row stays so the user can retry later.
-        new_task = await self.start_download(model_id, ms_token or old_task.token)
+        new_task = await self.start_download(
+            model_id, ms_token or old_task.token, dest_dir=old_task.dest_dir
+        )
         del self._tasks[task_id]
         self._cancelled.discard(task_id)
         new_task.retry_count = old_retry_count + 1
@@ -920,7 +934,7 @@ class MSDownloader(_QueuePersistenceMixin):
                 # Preserve {owner}/{model} layout to match other tools
                 # (LMStudio, huggingface-cli) and avoid duplicate downloads
                 # when sharing a model directory.
-                target_dir = self._model_dir / task.repo_id
+                target_dir = self.repo_dir(task.repo_id, task.dest_dir)
 
                 # Get total file size for progress estimation
                 try:
@@ -991,8 +1005,9 @@ class MSDownloader(_QueuePersistenceMixin):
                             logger.warning(f"Failed to clean up {target_dir}: {cleanup_err}")
                     # Drop empty org folder left behind by the cancelled download.
                     parent = target_dir.parent
+                    dest_root = Path(task.dest_dir) if task.dest_dir else self._model_dir
                     if (
-                        parent != self._model_dir
+                        parent != dest_root
                         and parent.exists()
                         and not any(parent.iterdir())
                     ):

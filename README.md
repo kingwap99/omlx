@@ -1,3 +1,64 @@
+## ⚡ Changes in this fork (vs upstream [jundot/omlx](https://github.com/jundot/omlx))
+
+> Branch: `feat/download-dest-and-model-move` (based on upstream `v0.8.2`).
+> Motivation: the host's internal SSD is only 1 TB, so downloads need to land in a
+> chosen `model_dirs` entry and models need to move between directories (including
+> external drives) while several versions are kept for testing.
+
+**1. Pick a destination directory when downloading (`dest_dir`)**
+
+- `POST /api/hf/download` and `/api/ms/download` accept `dest_dir`, restricted to the
+  configured `model_dirs` (whitelist-validated, must be actually mounted, so nothing
+  is written into a shadow `/Volumes` path when a drive is unplugged).
+- Each download task snapshots its destination at start and persists it; retries and
+  resume-after-restart always return to the original directory, even if the primary
+  directory changed since.
+- Updating an existing model without a destination follows the directory that model
+  was downloaded to, instead of downloading a second copy.
+- The admin download forms (HuggingFace / ModelScope) and the model detail panel
+  grow a **Download to** picker, shown only when more than one model directory is
+  configured. The detail panel refreshes the target volume's free space and disables
+  the button when it does not fit.
+
+**2. Move models between model directories**
+
+- New `POST /admin/api/hf/models/move` and `GET /admin/api/hf/models/move/{id}`
+  (progress polling). Same-volume moves are renames; cross-volume moves check free
+  space first, copy into a hidden staging directory (byte progress), verify, rename,
+  then delete the source.
+- In-flight downloads for the source directory are cancelled and the engine unloaded
+  before a move; organization subfolder layout is preserved, emptied directories are
+  cleaned up, and per-model settings (alias, favorite, speculative config) survive
+  the engine-pool refresh afterwards.
+- Every model row grows a move action with a progress badge. GGUF models and HF
+  cache entries are explicitly refused.
+
+**3. Show where each model lives**
+
+- `/api/hf/models` rows now carry `model_dir` and `model_dir_index` (0 = primary).
+- Models → Manager rows show a directory badge: grey "Primary" for the main
+  directory, otherwise the volume name (`/Volumes/SSD960/models` → `SSD960`), with
+  the full path in the tooltip.
+- The three downloader form fields got balanced widths as well.
+
+**Known limits**: move progress lives in memory, so a restart interrupts an
+in-flight move (its staging directory is cleaned up by the next move of the same
+model); the macOS menu-bar app's downloads screen has no destination picker yet (it
+keeps using the default directory when `dest_dir` is absent).
+
+**Deployment**: `scripts/deploy-dest-move.sh`. A DMG install keeps
+`/Applications/oMLX.app` under macOS App Management (even `sudo` gets EPERM), so the
+script stages this branch into `~/omlx-src`, borrows the app's bundled Python
+runtime via `run-omlx.sh`, and repoints the launchd plist (backed up first). After
+upgrading oMLX.app the new DMG does not take effect automatically; rerun the deploy
+script or restore the plist.
+
+**Verification**: the full test suite passes (including the new
+`tests/test_download_dest_and_move.py`); deployed and verified live on
+192.168.31.33:8258.
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-rounded-dark.svg" width="140">

@@ -134,6 +134,19 @@
                                                     <span class="badge bg-neutral-100 text-neutral-500 border-neutral-200 flex-shrink-0 whitespace-nowrap"
                                                           :title="window.t('settings.models.table.gguf_tooltip')">GGUF</span>
                                                 </template>
+                                                <template x-if="model.model_dir && modelDirChoices().length > 1">
+                                                    <button :disabled="modelMoveDisabled(model)"
+                                                            @click="openMoveDialog(model)"
+                                                            class="badge flex-shrink-0 max-w-[130px] truncate"
+                                                            :class="[
+                                                                isPrimaryModelDir(model.model_dir, model.model_dir_index)
+                                                                    ? 'bg-neutral-100 text-neutral-500 border-neutral-200'
+                                                                    : 'bg-sky-50 text-sky-700 border-sky-200',
+                                                                modelMoveDisabled(model) ? '' : 'hover:brightness-95 cursor-pointer'
+                                                            ]"
+                                                            :title="model.model_dir"
+                                                            x-text="modelDirLabel(model.model_dir, model.model_dir_index)"></button>
+                                                </template>
                                                 <template x-if="managerModelInfo(model.name)?.settings?.lora_adapter">
                                                     <span class="badge bg-neutral-100 text-neutral-500 border-neutral-200 flex-shrink-0 whitespace-nowrap"
                                                           :title="managerModelInfo(model.name)?.settings?.lora_adapter">LoRA</span>
@@ -181,6 +194,20 @@
                                                             :title="window.t('models.manager.delete_tooltip')">
                                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                     </button>
+                                                </template>
+                                                <template x-if="!hfMoveRow(model.name) && model.source_type !== 'hf_cache' && model.model_format !== 'gguf' && modelDirChoices().length > 1">
+                                                    <button @click="openMoveDialog(model)"
+                                                            class="p-1.5 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 rounded-lg transition-all"
+                                                            :title="window.t('models.manager.move_tooltip')">
+                                                        <i data-lucide="folder-input" class="w-4 h-4"></i>
+                                                    </button>
+                                                </template>
+                                                <template x-if="hfMoveRow(model.name) && hfMoveRow(model.name).status !== 'done'">
+                                                    <button @click="openMoveDialog(model)"
+                                                            class="badge whitespace-nowrap cursor-pointer"
+                                                            :class="hfMoveRow(model.name).status === 'error' ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100' : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'"
+                                                            :title="window.t('models.manager.move_tooltip')"
+                                                            x-text="moveLabel(hfMoveRow(model.name))"></button>
                                                 </template>
                                                 <template x-if="hfDeleteConfirm === model.name">
                                                     <div class="flex items-center gap-1.5">
@@ -268,7 +295,7 @@
                             </div>
                             <div class="px-6 py-5">
                                 <div class="flex flex-col sm:flex-row sm:items-end gap-4">
-                                    <div class="flex-1">
+                                    <div class="flex-1 min-w-0 sm:basis-[34rem]">
                                         <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">{{ t('models.downloader.repo_id') }}</label>
                                         <input type="text" x-model="hfRepoId"
                                                @keydown.enter="startHFDownload()"
@@ -278,7 +305,7 @@
                                                       bg-white font-mono text-xs"
                                         >
                                     </div>
-                                    <div class="w-full sm:w-48">
+                                    <div class="w-full sm:w-60">
                                         <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">
                                             {{ t('models.downloader.hf_token') }} <span class="text-neutral-400 normal-case">{{ t('models.downloader.hf_token_optional') }}</span>
                                         </label>
@@ -289,6 +316,19 @@
                                                       focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all
                                                       bg-white font-mono text-xs"
                                         >
+                                    </div>
+                                    <div x-show="modelDirChoices().length > 1" x-cloak class="w-full sm:w-80">
+                                        <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">{{ t('models.downloader.dest_dir') }}</label>
+                                        <select x-model="hfDestDir"
+                                                @change="refreshHfDiskFree(); loadRecommendations(true)"
+                                                class="w-full px-3 py-2.5 border border-neutral-200 rounded-lg text-sm
+                                                       focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all
+                                                       bg-white font-mono text-xs truncate">
+                                            <option value="">{{ t('models.downloader.dest_primary') }}</option>
+                                            <template x-for="(dir, i) in modelDirChoices().slice(1)" :key="dir">
+                                                <option :value="dir" x-text="dir"></option>
+                                            </template>
+                                        </select>
                                     </div>
                                     <button @click="startHFDownload()"
                                             :disabled="hfDownloading || !hfRepoId.trim()"
@@ -931,7 +971,7 @@
                                         </div>
                                         <div class="px-6 py-5">
                                             <div class="flex flex-col sm:flex-row sm:items-end gap-4">
-                                                <div class="flex-1">
+                                                <div class="flex-1 min-w-0 sm:basis-[34rem]">
                                                     <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">{{ t('models.downloader.repo_id') }}</label>
                                                     <input type="text" x-model="msRepoId"
                                                            @keydown.enter="startMSDownload()"
@@ -940,7 +980,7 @@
                                                                   focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all
                                                                   bg-white font-mono text-xs">
                                                 </div>
-                                                <div class="w-full sm:w-48">
+                                                <div class="w-full sm:w-60">
                                                     <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">
                                                         <span x-text="window.t('models.downloader.ms_token')"></span>
                                                         <span class="text-neutral-400 normal-case" x-text="window.t('models.downloader.ms_token_optional')"></span>
@@ -951,6 +991,18 @@
                                                            class="w-full px-4 py-2.5 border border-neutral-200 rounded-lg text-sm
                                                                   focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all
                                                                   bg-white font-mono text-xs">
+                                                </div>
+                                                <div x-show="modelDirChoices().length > 1" x-cloak class="w-full sm:w-80">
+                                                    <label class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-1.5">{{ t('models.downloader.dest_dir') }}</label>
+                                                    <select x-model="msDestDir"
+                                                            class="w-full px-3 py-2.5 border border-neutral-200 rounded-lg text-sm
+                                                                   focus:ring-2 focus:ring-neutral-900 focus:border-transparent transition-all
+                                                                   bg-white font-mono text-xs truncate">
+                                                        <option value="">{{ t('models.downloader.dest_primary') }}</option>
+                                                        <template x-for="(dir, i) in modelDirChoices().slice(1)" :key="dir">
+                                                            <option :value="dir" x-text="dir"></option>
+                                                        </template>
+                                                    </select>
                                                 </div>
                                                 <button @click="startMSDownload()"
                                                         :disabled="msDownloading || !msRepoId.trim()"
@@ -2277,6 +2329,16 @@
                                         </template>
                                         <template x-if="!hfModelDetail.unsupported_reason && (hfModelDetail.layout === 'gguf' || !isModelDownloaded(hfModelDetail.repo_id))">
                                             <div class="flex items-center gap-2">
+                                                <select x-show="modelDirChoices().length > 1" x-cloak x-model="hfDestDir"
+                                                        @change="refreshHfDiskFree()"
+                                                        x-effect="$nextTick(() => { $el.value = hfDestDir })"
+                                                        class="px-2 py-1.5 text-xs border border-neutral-200 rounded-lg bg-white font-mono max-w-[220px]"
+                                                        :title="window.t('models.downloader.dest_dir')">
+                                                    <option value="">{{ t('models.downloader.dest_primary') }}</option>
+                                                    <template x-for="dir in modelDirChoices().slice(1)" :key="dir">
+                                                        <option :value="dir" x-text="dir"></option>
+                                                    </template>
+                                                </select>
                                                 <button @click="submitHFDownload(null)"
                                                         :disabled="hfDownloading || !hfFitsDisk(hfDownloadAllSize())"
                                                         class="px-4 py-2 text-xs font-medium text-neutral-700 bg-neutral-100 hover:bg-neutral-200 rounded-full transition-all

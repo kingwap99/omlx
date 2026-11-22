@@ -909,6 +909,16 @@ class TestSTTDiarization:
         engine._model._alignment_tokenizer = None
         assert engine.supports_diarization() == ("vibevoice" in module)
 
+    def test_nemotron_backend_without_ctc_attributes_is_not_diarizing(self):
+        """mlx-audio releases before 0.6.5 lack the CTC head attributes."""
+        class OlderModel:
+            __module__ = "mlx_audio.stt.models.nemotron_transcribe.nemotron_transcribe"
+            sample_rate = 16000
+
+        engine = STTEngine("older")
+        engine._model = OlderModel()
+        assert engine.supports_diarization() is False
+
     def _post(self, client, **data):
         return client.post(
             "/v1/audio/transcriptions",

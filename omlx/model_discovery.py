@@ -1422,18 +1422,16 @@ def _missing_weight_shards(model_dir: Path) -> tuple[int, list[str], str] | None
 
 def model_directory_access_error(path: Path) -> str | None:
     """Return a user-facing error if a model directory cannot be scanned."""
-    try:
-        if not path.exists():
-            return f"Model directory does not exist: {path}"
-        if not path.is_dir():
-            return f"Model directory is not a directory: {path}"
-        next(path.iterdir(), None)
-    except OSError as e:
-        return (
-            f"Model directory is not readable: {path} "
-            f"({type(e).__name__}: {e})"
-        )
-    return None
+    from .utils.path_probe import probe_dir
+
+    available, error = probe_dir(path)
+    if available:
+        return None
+    if error == "does not exist":
+        return f"Model directory does not exist: {path}"
+    if error == "not a directory":
+        return f"Model directory is not a directory: {path}"
+    return f"Model directory is not readable: {path} ({error})"
 
 
 def model_directory_write_error(path: Path, *, create: bool = False) -> str | None:
