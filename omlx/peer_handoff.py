@@ -48,6 +48,13 @@ _PEER_CLI_FALLBACK = "~/.darkbloom/bin/darkbloom"
 # Marker printed by the Darkbloom CLI while its provider is serving.
 _RUNNING_MARKER = "Daemon: running"
 
+# After a failed stop attempt, do not retry the handoff for this long. Without
+# a cool-down every queued request re-runs the status probe and the stop
+# command, which turns a single memory refusal into minutes of stalls.
+FAILURE_COOLDOWN_SECONDS = 300
+
+_last_failure = 0.0
+
 
 def _status_command() -> str:
     return os.environ.get("OMLX_PEER_STATUS", DEFAULT_STATUS).strip()
@@ -90,12 +97,20 @@ def peer_running() -> bool:
     return _RUNNING_MARKER in ((proc.stdout or "") + (proc.stderr or ""))
 
 
-def release_peer_memory(model_id: str, needed_bytes: int = 0, wait_seconds: int = 90) -> bool:
+def release_peer_memory(model_id: str, needed_bytes: int = 0, wait_seconds: int = 25) -> bool:
     """Stop the peer service so ``model_id`` can be admitted.
 
     Returns True when the peer was running and has now exited, so the caller
     should re-run its admission check.
     """
+    global _last_failure
+    if _last_failure and time.time() - _last_failure < FAILURE_COOLDOWN_SECONDS:
+        return False
+    if not os.environ.get("OMLX_PEER_HANDOFF", "").strip():
+        # Off by default: this runs on the request path, and a client that
+        # retries a refused load would otherwise re-run the stop command for
+        # every attempt. Opt in with OMLX_PEER_HANDOFF=1.
+        return False
     if not peer_running():
         return False
     stop = _stop_command()
@@ -117,17 +132,21 @@ def release_peer_memory(model_id: str, needed_bytes: int = 0, wait_seconds: int 
         )
     except Exception:
         logger.warning("Peer stop command did not complete", exc_info=True)
+        _last_failure = time.time()
         return False
 
     # macOS keeps the exited process's pages around as inactive memory rather
     # than returning them to the free list, so waiting for a free-byte target
     # would burn the whole timeout on every handoff. Wait for the peer to
     # disappear instead, then give the kernel a moment to unmap its buffers.
-    deadline = time.time() + min(wait_seconds, 90)
+    # This runs on the request path, so the wait stays short: a peer that has
+    # not exited within a few seconds is not going to help this request.
+    deadline = time.time() + min(wait_seconds, 25)
     while time.time() < deadline:
         if not peer_running():
             time.sleep(3)
             return True
         time.sleep(1)
     logger.warning("Peer stop returned but the peer is still running")
+    _last_failure = time.time()
     return False
