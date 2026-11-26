@@ -1,6 +1,6 @@
 ## ⚡ Changes in this fork (vs upstream [jundot/omlx](https://github.com/jundot/omlx))
 
-> Branch: `feat/download-dest-and-model-move` (based on upstream `v0.8.2`).
+> Branch: `feat/download-dest-and-model-move` (based on upstream `v0.8.4`).
 > Motivation: the host's internal SSD is only 1 TB, so downloads need to land in a
 > chosen `model_dirs` entry and models need to move between directories (including
 > external drives) while several versions are kept for testing.

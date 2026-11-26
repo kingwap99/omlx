@@ -1,6 +1,6 @@
 ## ⚡ Modifications de ce fork (par rapport à l'amont [jundot/omlx](https://github.com/jundot/omlx))
 
-> Branche : `feat/download-dest-and-model-move` (basée sur l'amont `v0.8.2`).
+> Branche : `feat/download-dest-and-model-move` (basée sur l'amont `v0.8.4`).
 > Motivation : le SSD interne de l'hôte ne fait que 1 To ; il faut télécharger les
 > modèles dans un répertoire `model_dirs` choisi et les déplacer entre répertoires
 > (y compris des disques externes) tout en conservant plusieurs versions pour les tests.
