@@ -2183,6 +2183,13 @@ def discover_models_from_dirs(
         except ValueError as e:
             logger.warning(f"Skipping directory {model_dir}: {e}")
             continue
+        except TimeoutError:
+            # A mount can pass the availability probe and still stall on the
+            # first per-file stat. Skip it instead of failing startup.
+            logger.warning(
+                f"Skipping directory {model_dir}: timed out while scanning"
+            )
+            continue
 
         for model_id, info in discovered.items():
             if model_id in merged:

@@ -8517,8 +8517,16 @@ def _free_disk_bytes(path: str | Path) -> int:
         while not check_path.exists() and check_path.parent != check_path:
             check_path = check_path.parent
         return shutil.disk_usage(check_path).free
-    except OSError:
+    except (OSError, RuntimeError):
         return 0
+
+
+def _path_present(path: Path) -> bool:
+    """Whether `path` exists, bounded so a stale mount cannot raise or hang."""
+    from ..utils.path_probe import probe_dir
+
+    available, _reason = probe_dir(path, timeout=3.0, ttl=5.0)
+    return available
 
 
 @router.get("/api/hf/model-dirs")
@@ -8534,6 +8542,11 @@ async def list_model_dirs(is_admin: bool = Depends(require_admin)):
         from ..utils.path_probe import probe_dir
 
         exists, unavailable_reason = await asyncio.to_thread(probe_dir, model_dir)
+        if not exists:
+            # The mount may have recovered since the cached startup answer.
+            exists, unavailable_reason = await asyncio.to_thread(
+                probe_dir, model_dir, ttl=5.0, refresh=True
+            )
         free = (
             await asyncio.to_thread(_free_disk_bytes, model_dir) if exists else 0
         )
@@ -8674,7 +8687,9 @@ async def get_hf_model_info(
     if _hf_downloader is not None and _is_repo_id(repo_id):
         for root in _hf_downloader.destination_dirs():
             candidate = root / repo_id
-            if candidate.exists():
+            # A slow or stale network mount must not fail this lookup: probe
+            # with a deadline and treat an unreachable directory as absent.
+            if await asyncio.to_thread(_path_present, candidate):
                 local_dir = candidate
                 break
         if local_dir is None:
@@ -8929,7 +8944,13 @@ def _find_model_folder(
         candidate = model_dir / model_name
         if candidate.is_dir() and _is_listed_model_folder(candidate):
             return candidate, model_dir, "dir"
-        for subdir in model_dir.iterdir():
+        try:
+            entries = list(model_dir.iterdir())
+        except OSError:
+            # An unreadable listing is not a reason to raise: the folder cannot
+            # be found here, so keep looking in the other directories.
+            continue
+        for subdir in entries:
             if not subdir.is_dir() or subdir.name.startswith("."):
                 continue
             hf_resolved = _resolve_hf_cache_entry(subdir)
