@@ -72,6 +72,19 @@ if [[ -f $RES/omlx/__init__.py ]]; then
     "$REPO_ROOT/omlx/" "$DST/omlx/"
   rsync -a --exclude '__pycache__' --exclude '*.pyc' \
     "$REPO_ROOT/apps/omlx-web/omlx_web/" "$DST/omlx_web/"
+  # The native extension binaries are optional, but the Metal kernel libraries
+  # beside them are not: each .so opens its own <name>.metallib by path, and a
+  # missing one fails the first prefill of that family with
+  # "Failed to load the metallib ... library not found". A source tree has no
+  # metallibs, so take the built ones from the installed app (same mlx ABI).
+  BUNDLE_KERNELS="$RES/omlx/custom_kernels"
+  if [[ -d $BUNDLE_KERNELS ]]; then
+    for lib in "$BUNDLE_KERNELS"/*/*.metallib; do
+      [[ -f $lib ]] || continue
+      mkdir -p "$DST/omlx/custom_kernels/$(basename $(dirname $lib))"
+      cp -f "$lib" "$DST/omlx/custom_kernels/$(basename $(dirname $lib))/"
+    done
+  fi
   cat > "$DST/run-omlx.sh" <<'RUN'
 #!/bin/sh
 APP="/Applications/oMLX.app/Contents"
